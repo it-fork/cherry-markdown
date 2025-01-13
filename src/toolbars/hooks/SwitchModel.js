@@ -14,29 +14,27 @@
  * limitations under the License.
  */
 import MenuBase from '@/toolbars/MenuBase';
-import locale from '@/utils/locale';
-import Event from '@/Event';
 /**
  * 切换预览/编辑模式的按钮
  * 该按钮不支持切换到双栏编辑模式
  * 只能切换成纯编辑模式和纯预览模式
  **/
 export default class SwitchModel extends MenuBase {
-  constructor(editor, engine, toolbar) {
-    super(editor);
+  constructor($cherry) {
+    super($cherry);
     this.setName('switchPreview');
-    this.instanceId = toolbar.instanceId;
+    this.instanceId = $cherry.instanceId;
     this.attachEventListeners();
   }
 
   attachEventListeners() {
-    Event.on(this.instanceId, Event.Events.toolbarHide, () => {
+    this.$cherry.$event.on('toolbarHide', () => {
       // 当收到工具栏隐藏事件后，修改工具栏的内容为切换到编辑模式的内容
-      this.dom.textContent = locale.zh_CN.switchEdit;
+      this.dom.textContent = this.locale.switchEdit;
     });
-    Event.on(this.instanceId, Event.Events.toolbarShow, () => {
+    this.$cherry.$event.on('toolbarShow', () => {
       // 当收到工具栏显示事件后，修改工具栏的内容为切换到预览模式的内容
-      this.dom.textContent = locale.zh_CN.switchPreview;
+      this.dom.textContent = this.locale.switchPreview;
     });
   }
 
@@ -44,15 +42,15 @@ export default class SwitchModel extends MenuBase {
     if (this.editor.previewer.isPreviewerHidden()) {
       // 从编辑模式切换到预览模式
       this.editor.previewer.previewOnly();
-      const toolbar = this.dom.parentElement;
+      const toolbar = this.dom.parentElement.parentElement;
       toolbar.classList.add('preview-only');
-      this.dom.textContent = locale.zh_CN.switchEdit;
+      this.dom.textContent = this.locale.switchEdit;
     } else {
       // 从预览模式切换到编辑模式
       this.editor.previewer.editOnly(true);
-      const toolbar = this.dom.parentElement;
+      const toolbar = this.dom.parentElement.parentElement;
       toolbar.classList.remove('preview-only');
-      this.dom.textContent = locale.zh_CN.switchPreview;
+      this.dom.textContent = this.locale.switchPreview;
     }
   }
 }

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 import ParagraphBase from '@/core/ParagraphBase';
-import { compileRegExp } from '@/utils/regexp';
+import { getTableRule } from '@/utils/regexp';
 
 const TABLE_LOOSE = 'loose';
 const TABLE_STRICT = 'strict';
@@ -26,11 +26,13 @@ export default class Table extends ParagraphBase {
     super({ needCache: true });
     const {
       enableChart,
+      selfClosing,
       chartRenderEngine: ChartRenderEngine,
       externals: requiredPackages,
       chartEngineOptions = {},
     } = config;
     this.chartRenderEngine = null;
+    this.selfClosing = selfClosing;
     if (enableChart === true) {
       try {
         this.chartRenderEngine = new ChartRenderEngine({
@@ -118,7 +120,7 @@ export default class Table extends ParagraphBase {
       rowLength: rows.length - 2, // 去除表头和控制行
     };
     const chartOptions = this.$parseChartOptions(rows[0][0]);
-    const chartOptionsSign = this.$engine.md5(rows[0][0]);
+    const chartOptionsSign = this.$engine.hash(rows[0][0]);
     // 如果需要生成图表，
     if (chartOptions) {
       rows[0][0] = '';
@@ -138,8 +140,9 @@ export default class Table extends ParagraphBase {
     const tableHeader = this.$extendColumns(rows[0], maxCol)
       .map((cell, col) => {
         tableObject.header.push(cell.replace(/~CS/g, '\\|'));
+        const { html: cellHtml } = sentenceMakeFunc(cell.replace(/~CS/g, '\\|').trim());
         // 前后补一个空格，否则自动链接会将缓存的内容全部收入链接内部
-        return `~CTH${textAlignRules[col] || 'U'} ${cell.replace(/~CS/g, '\\|').trim()} ~CTH$`;
+        return `~CTH${textAlignRules[col] || 'U'} ${cellHtml} ~CTH$`;
       })
       .join('');
     const tableRows = rows
@@ -165,18 +168,35 @@ export default class Table extends ParagraphBase {
       return tableResult;
     }
     const chart = this.chartRenderEngine.render(chartOptions.type, chartOptions.options, tableObject);
-    const chartHtml = `<figure id="table_chart_${chartOptionsSign}_${tableResult.sign}"
-      data-sign="table_chart_${chartOptionsSign}_${tableResult.sign}" data-lines="0">${chart}</figure>`;
+    const chartHtml = `<figure class="cherry-table-figure">${chart}</figure>`;
+    const newSign = `${tableResult.sign}${chartOptionsSign}`;
     return {
-      html: `${chartHtml}${tableResult.html}`,
-      sign: chartOptionsSign + tableResult.sign,
+      html: tableResult.html
+        .replace(/(^<div .*?>)/, `$1${chartHtml}`)
+        .replace(/(^<div .*? data-sign=")[^"]+?"/, `$1${newSign}"`),
+      sign: newSign,
     };
   }
 
+  /**
+   * 如果table.head是空的，就不渲染<thead>了
+   * @param {String} str
+   * @returns {Boolean}
+   */
+  $testHeadEmpty(str) {
+    const test = str
+      .replace(/&nbsp;/g, '')
+      .replace(/\s/g, '')
+      .replace(/(~CTH\$|~CTHU|~CTHL|~CTHR|~CTHC)/g, '');
+    return test?.length > 0;
+  }
+
   $renderTable(COLUMN_ALIGN_MAP, tableHeader, tableRows, dataLines) {
-    const cacheSrc = `~CTHD${tableHeader}~CTHD$~CTBD${tableRows}~CTBD$`;
+    const cacheSrc = this.$testHeadEmpty(tableHeader)
+      ? `~CTHD${tableHeader}~CTHD$~CTBD${tableRows}~CTBD$`
+      : `~CTBD${tableRows}~CTBD$`;
     const html = cacheSrc;
-    const sign = this.$engine.md5(html);
+    const sign = this.$engine.hash(html);
     const renderHtml = html
       .replace(/~CTHD\$/g, '</thead>')
       .replace(/~CTHD/g, '<thead>')
@@ -205,6 +225,11 @@ export default class Table extends ParagraphBase {
 
   makeHtml(str, sentenceMakeFunc) {
     let $str = str;
+    if (this.$engine.$cherry.options.engine.global.flowSessionContext || this.selfClosing) {
+      if (/(^|^[^|][^\n]*\n|\n\n|\n[^|][^\n]*\n)\s*\|[^\n]+\n{0,1}[|:-\s]*\n*$/.test($str)) {
+        $str = `${$str.replace(/\n[|:-\s]*\n*$/, '')}\n|-|`;
+      }
+    }
     // strict fenced mode
     if (this.test($str, TABLE_STRICT)) {
       $str = $str.replace(this.RULE[TABLE_STRICT].reg, (match, leading) => {
@@ -240,39 +265,11 @@ export default class Table extends ParagraphBase {
     return this.RULE[flavor].reg && this.RULE[flavor].reg.test(str);
   }
 
+  /**
+   * TODO: fix type errors
+   * @returns
+   */
   rule() {
-    // ^(\|[^\n]+\|\r?\n)((?:\|:?[-]+:?)+\|)(\n(?:\|[^\n]+\|\r?\n?)*)?$
-    // (\\|?[^\\n|]+\\|?\\n)(?:\\|?[\\s]*:?[-]{2,}:?[\\s]*
-    // (?:\\|[\\s]*:?[-]{2,}:?[\\s]*)+\\|?)(\\n\\|?(\\|[^\\n|]+)*\\|?)?
-    /**
-     * (\|[^\n]+\|\n)     Headers
-     * ((\|[\s]*:?[-]{2,}:?[\s]*)+\|)      Column Options
-     * ((?:\n\|[^\n]+\|)*)  Rows
-     */
-    const strict = {
-      begin: '(?:^|\\n)(\\n*)',
-      content: [
-        '(\\h*\\|[^\\n]+\\|?\\h*)', // Header
-        '\\n',
-        '(?:(?:\\h*\\|\\h*:?[-]{1,}:?\\h*)+\\|?\\h*)', // Column Options
-        '((\\n\\h*\\|[^\\n]+\\|?\\h*)*)', // Rows
-      ].join(''),
-      end: '(?=$|\\n)',
-    };
-    strict.reg = compileRegExp(strict, 'g', true);
-
-    const loose = {
-      begin: '(?:^|\\n)(\\n*)',
-      content: [
-        '(\\|?[^\\n|]+(\\|[^\\n|]+)+\\|?)', // Header
-        '\\n',
-        '(?:\\|?\\h*:?[-]{1,}:?[\\h]*(?:\\|[\\h]*:?[-]{1,}:?\\h*)+\\|?)', // Column Options
-        '((\\n\\|?([^\\n|]+(\\|[^\\n|]*)+)\\|?)*)', // Rows
-      ].join(''),
-      end: '(?=$|\\n)',
-    };
-    loose.reg = compileRegExp(loose, 'g', true);
-
-    return { strict, loose };
+    return /** @type {any} */ (getTableRule());
   }
 }

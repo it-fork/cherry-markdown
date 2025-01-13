@@ -30,7 +30,7 @@ function attrsToAttributeString(object) {
 }
 
 export function makeChecklist(text) {
-  return text.replace(/([*+-]\s+)\[(\s|x)\]/g, (whole, pre, test) => {
+  return text.replace(/^((?:|[\t ]+)[*+-]\s+)\[(\s|x)\]/gm, (whole, pre, test) => {
     const checkHtml = /\s/.test(test)
       ? '<span class="ch-icon ch-icon-square"></span>'
       : '<span class="ch-icon ch-icon-check"></span>';
@@ -71,7 +71,8 @@ function getListStyle(m2) {
 
 // 标识符处理
 function handleMark(str, node) {
-  const listRegex = /^((([*+-]|\d+[.]|[a-z]\.|[I一二三四五六七八九十]+\.)[ \t]+)([^\r]+?)($|\n{2,}(?=\S)(?![ \t]*(?:[*+-]|\d+[.]|[a-z]\.|[I一二三四五六七八九十]+\.)[ \t]+)))/;
+  const listRegex =
+    /^((([*+-]|\d+[.]|[a-z]\.|[I一二三四五六七八九十]+\.)[ \t]+)([^\r]*?)($|\n{2,}(?=\S)(?![ \t]*(?:[*+-]|\d+[.]|[a-z]\.|[I一二三四五六七八九十]+\.)[ \t]+)))/;
   if (!listRegex.test(str)) {
     node.type = 'blank';
     return str;
@@ -171,16 +172,18 @@ export default class List extends ParagraphBase {
     const attr = {};
     const content = children.reduce((html, item) => {
       const child = this.tree[item];
-      const itemAttr = {};
+      const itemAttr = {
+        class: 'cherry-list-item',
+      };
       const str = `<p>${child.strs.join('<br>')}</p>`;
-      child.lines += child.strs.length;
+      child.lines += this.getLineCount(child.strs.join('\n'));
       const children = child.children.length ? this.renderTree(item) : '';
       node.lines += child.lines;
       lines += child.lines;
       // checklist 样式适配
       const checklistRegex = /<span class="ch-icon ch-icon-(square|check)"><\/span>/;
       if (checklistRegex.test(str)) {
-        itemAttr.class = 'check-list-item';
+        itemAttr.class += ' check-list-item';
       }
       return `${html}<li${attrsToAttributeString(itemAttr)}>${str}${children}</li>`;
     }, '');
@@ -188,6 +191,9 @@ export default class List extends ParagraphBase {
       // 根节点增加属性
       attr['data-lines'] = node.index === 0 ? lines + this.emptyLines : lines;
       attr['data-sign'] = this.sign;
+    }
+    if (children[0] && type === 'ol') {
+      attr.start = this.tree[children[0]].start;
     }
     attr.class = `cherry-list__${this.tree[children[0]].listStyle}`;
     return `<${type}${attrsToAttributeString(attr)}>${content}</${type}>`;
@@ -214,21 +220,29 @@ export default class List extends ParagraphBase {
     return html + childrenHtml;
   }
 
-  toHtml(text, sentenceMakeFunc) {
-    this.sign = this.$engine.md5(text);
+  toHtml(wholeMatch, sentenceMakeFunc) {
+    // 行数计算吸收的空行
+    this.emptyLines = wholeMatch.match(/^\n\n/)?.length ?? 0;
+    const text = wholeMatch.replace(/~0$/g, '').replace(/^\n+/, '');
     this.buildTree(makeChecklist(text), sentenceMakeFunc);
-    return this.renderTree(0);
+    const result = this.renderTree(0);
+    return this.pushCache(result, this.sign, this.$getLineNum(wholeMatch));
+  }
+
+  $getLineNum(str) {
+    const beginLine = str.match(/^\n\n/)?.length ?? 0;
+    const $str = str.replace(/^\n+/, '').replace(/\n+$/, '\n');
+    return $str.match(/\n/g)?.length ?? 0 + beginLine;
   }
 
   makeHtml(str, sentenceMakeFunc) {
     let $str = `${str}~0`;
     if (this.test($str)) {
       $str = $str.replace(this.RULE.reg, (wholeMatch) => {
-        // 行数计算吸收的空行
-        this.emptyLines = wholeMatch.match(/^\n\n/)?.length ?? 0;
-        const text = wholeMatch.replace(/~0$/g, '').replace(/^\n+/, '');
-        const result = this.toHtml(text, sentenceMakeFunc);
-        return this.getCacheWithSpace(this.pushCache(result, this.sign), wholeMatch);
+        return this.getCacheWithSpace(
+          this.checkCache(wholeMatch, sentenceMakeFunc, this.$getLineNum(wholeMatch)),
+          wholeMatch,
+        );
       });
     }
     $str = $str.replace(/~0$/g, '');

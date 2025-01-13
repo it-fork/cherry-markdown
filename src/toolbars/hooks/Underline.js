@@ -14,13 +14,27 @@
  * limitations under the License.
  */
 import MenuBase from '@/toolbars/MenuBase';
+import { CONTROL_KEY, getKeyCode } from '@/utils/shortcutKey';
 /**
  * 下划线按钮
  **/
 export default class Underline extends MenuBase {
-  constructor(editor) {
-    super(editor);
+  /**
+   * @param {import('@/toolbars/MenuBase').MenuBaseConstructorParams} $cherry
+   */
+  constructor($cherry) {
+    super($cherry);
     this.setName('underline', 'underline');
+    this.shortcutKeyMap = {
+      [`${CONTROL_KEY}-${getKeyCode('u')}`]: {
+        hookName: this.name,
+        aliasName: this.$cherry.locale[this.name],
+      },
+    };
+  }
+
+  $testIsUnderline(selection) {
+    return /^\s*(\/)[\s\S]+(\1)/.test(selection);
   }
 
   /**
@@ -30,20 +44,25 @@ export default class Underline extends MenuBase {
    * @returns {string} 回填到编辑器光标位置/选中文本区域的内容
    */
   onClick(selection, shortKey = '') {
+    let $selection = selection ? selection : this.locale.underline;
     // 如果选中的内容里有下划线语法，则认为是要去掉下划线语法
-    if (/^\s*(\/)[\s\S]+(\1)/.test(selection)) {
-      return selection.replace(/(^)(\s*)(\/)([^\n]+)(\3)(\s*)($)/gm, '$1$4$7');
+    if (!this.isSelections && !this.$testIsUnderline($selection)) {
+      this.getMoreSelection(' /', '/ ', () => {
+        const newSelection = this.editor.editor.getSelection();
+        const isUnderline = this.$testIsUnderline(newSelection);
+        if (isUnderline) {
+          $selection = newSelection;
+        }
+        return isUnderline;
+      });
     }
-    let $selection = selection ? selection : '下划线';
+    if (this.$testIsUnderline($selection)) {
+      return $selection.replace(/(^)(\s*)(\/)([^\n]+)(\3)(\s*)($)/gm, '$1$4$7');
+    }
+    this.registerAfterClickCb(() => {
+      this.setLessSelection(' /', '/ ');
+    });
     // 如果选中的内容里没有下划线语法，则加上下划线
-    $selection = $selection.replace(/(^)([^\n]+)($)/gm, '$1 /$2/ $3');
-    return $selection;
-  }
-
-  /**
-   * 声明绑定的快捷键，快捷键触发onClick
-   */
-  get shortcutKeys() {
-    return ['Mod-u'];
+    return $selection.replace(/(^)([^\n]+)($)/gm, '$1 /$2/ $3');
   }
 }

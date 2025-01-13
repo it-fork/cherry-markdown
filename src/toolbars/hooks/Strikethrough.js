@@ -14,13 +14,28 @@
  * limitations under the License.
  */
 import MenuBase from '@/toolbars/MenuBase';
+import { getSelection } from '@/utils/selection';
+import { CONTROL_KEY, getKeyCode } from '@/utils/shortcutKey';
 /**
  * 删除线的按钮
  */
 export default class Strikethrough extends MenuBase {
-  constructor(editor) {
-    super(editor);
+  /**
+   * @param {import('@/toolbars/MenuBase').MenuBaseConstructorParams} $cherry
+   */
+  constructor($cherry) {
+    super($cherry);
     this.setName('strikethrough', 'strike');
+    this.shortcutKeyMap = {
+      [`${CONTROL_KEY}-${getKeyCode('d')}`]: {
+        hookName: this.name,
+        aliasName: this.$cherry.locale[this.name],
+      },
+    };
+  }
+
+  $testIsStrike(selection) {
+    return /(~~)[\s\S]+(\1)/.test(selection);
   }
 
   /**
@@ -30,13 +45,27 @@ export default class Strikethrough extends MenuBase {
    * @returns {string} 回填到编辑器光标位置/选中文本区域的内容
    */
   onClick(selection, shortKey = '') {
+    let $selection = getSelection(this.editor.editor, selection) || this.locale.strikethrough;
+    // @ts-ignore
+    const needWhitespace = this.$cherry?.options?.engine?.syntax?.strikethrough?.needWhitespace;
+    const space = needWhitespace ? ' ' : '';
     // 如果被选中的文本中包含删除线语法，则去掉删除线语法
-    if (/(~~)[\s\S]+(\1)/.test(selection)) {
+    if (!this.isSelections && !this.$testIsStrike($selection)) {
+      this.getMoreSelection(`${space}~~`, `~~${space}`, () => {
+        const newSelection = this.editor.editor.getSelection();
+        const isStrike = this.$testIsStrike(newSelection);
+        if (isStrike) {
+          $selection = newSelection;
+        }
+        return isStrike;
+      });
+    }
+    if (this.$testIsStrike($selection)) {
       return selection.replace(/[\s]*(~~)([\s\S]+)(\1)[\s]*/g, '$2');
     }
-    let $selection = selection ? selection : '删除线';
-    // 反之加上删除线语法
-    $selection = $selection.replace(/(^)[\s]*([\s\S]+)[\s]*($)/g, '$1 ~~$2~~ $3');
-    return $selection;
+    this.registerAfterClickCb(() => {
+      this.setLessSelection(`${space}~~`, `~~${space}`);
+    });
+    return $selection.replace(/(^)[\s]*([\s\S]+?)[\s]*($)/g, `$1${space}~~$2~~${space}$3`);
   }
 }

@@ -14,52 +14,114 @@
  * limitations under the License.
  */
 import MenuBase from '@/toolbars/MenuBase';
+import { getSelection } from '@/utils/selection';
 /**
  * 插入字体颜色或者字体背景颜色的按钮
  */
 export default class Color extends MenuBase {
-  constructor(editor) {
-    super(editor);
+  constructor($cherry) {
+    super($cherry);
     this.setName('color', 'color');
-    this.bubbleMenu = true;
-    this.bubbleColor = new BubbleColor(editor);
+    // this.bubbleMenu = true;
+    this.bubbleColor = new BubbleColor($cherry);
+  }
+
+  $testIsColor(type, selection) {
+    const textReg = /^\s*!![^\s]+ [\s\S]+!!\s*$/;
+    const bgReg = /^\s*!!![^\s]+ [\s\S]+!!!\s*$/;
+    if (type === 'text') {
+      return textReg.test(selection) && !bgReg.test(selection);
+    }
+    return bgReg.test(selection);
+  }
+
+  $testIsShortKey(shortKey) {
+    return /(color|background-color)\s*:/.test(shortKey);
+  }
+
+  $getTypeAndColor(shortKey) {
+    if (this.$testIsShortKey(shortKey)) {
+      const type = /background-color\s*:/.test(shortKey) ? 'background-color' : 'text';
+      const color = shortKey.replace(/(color|background-color)\s*:\s*([#0-9a-zA-Z]+)[^#0-9a-zA-Z]*$/, '$2').trim();
+      return { type, color };
+    }
+    return this.getAndCleanCacheOnce();
+  }
+
+  hideOtherSubMenu(hideAllSubMenu) {
+    const lastDisplay = this.bubbleColor.dom.style.display || 'none';
+    hideAllSubMenu();
+    this.bubbleColor.dom.style.display = lastDisplay;
   }
 
   /**
    * 响应点击事件
    * @param {string} selection 被用户选中的文本内容
-   * @param {string} shortKey 快捷键参数，本函数不处理这个参数
+   * @param {string} shortKey 快捷键参数，color: #000000 | background-color: #000000
    * @param {Event & {target:HTMLElement}} event 点击事件，用来从被点击的调色盘中获得对应的颜色
    * @returns 回填到编辑器光标位置/选中文本区域的内容
    */
   onClick(selection, shortKey = '', event) {
-    const text = selection ? selection : '字体颜色或背景';
-    if (event) {
-      // 暂存选中的文本内容
-      this.bubbleColor.setSelection(text);
-
-      // 定位调色盘应该出现的位置
-      // 该按钮可能出现在顶部工具栏，
-      // 也可能出现在选中文字时出现的bubble工具栏，
-      // 也可能出现在新行出现的float工具栏
-      let top = 0;
-      let left = 0;
-      if (event.target.closest('.cherry-bubble')) {
-        const $colorDom = /** @type {HTMLElement}*/ (event.target.closest('.cherry-bubble'));
-        const clientRect = $colorDom.getBoundingClientRect();
-        top = clientRect.top + $colorDom.offsetHeight;
-        left = /** @type {HTMLElement}*/ (event.target.closest('.cherry-toolbar-color')).offsetLeft + clientRect.left;
-      } else {
-        const $colorDom = /** @type {HTMLElement}*/ (event.target.closest('.cherry-toolbar-color'));
-        const clientRect = $colorDom.getBoundingClientRect();
-        top = clientRect.top + $colorDom.offsetHeight;
-        left = clientRect.left;
+    if (this.hasCacheOnce() || this.$testIsShortKey(shortKey)) {
+      let $selection = getSelection(this.editor.editor, selection) || this.locale.color;
+      // @ts-ignore
+      const { type, color } = this.$getTypeAndColor(shortKey);
+      const begin = type === 'text' ? `!!${color} ` : `!!!${color} `;
+      const end = type === 'text' ? '!!' : '!!!';
+      if (!this.isSelections && !this.$testIsColor(type, $selection)) {
+        this.getMoreSelection(begin, end, () => {
+          const newSelection = this.editor.editor.getSelection();
+          if (this.$testIsColor(type, newSelection)) {
+            $selection = newSelection;
+            return true;
+          }
+          return false;
+        });
       }
-      this.bubbleColor.show({
-        left,
-        top,
+      if (this.$testIsColor(type, $selection)) {
+        const reg = new RegExp(`(^\\s*${end})([^\\s]+) ([\\s\\S]+${end}\\s*$)`, 'gm');
+        let needClean = true;
+        const tmp = $selection.replace(reg, (w, m1, m2, m3) => {
+          needClean = needClean ? m2 === color : false;
+          return `${m1}${color} ${m3}`;
+        });
+        if (needClean) {
+          return $selection.replace(reg, '$3').replace(/!+\s*$/gm, '');
+        }
+        this.registerAfterClickCb(() => {
+          this.setLessSelection(begin, end);
+        });
+        return tmp;
+      }
+      this.registerAfterClickCb(() => {
+        this.setLessSelection(begin, end);
       });
+      return `${begin}${$selection}${end}`;
     }
+    // 定位调色盘应该出现的位置
+    // 该按钮可能出现在顶部工具栏，
+    // 也可能出现在选中文字时出现的bubble工具栏，
+    // 也可能出现在新行出现的float工具栏
+    let top = 0;
+    let left = 0;
+    if (event.target.closest('.cherry-bubble')) {
+      const $colorDom = /** @type {HTMLElement}*/ (event.target.closest('.cherry-bubble'));
+      const clientRect = $colorDom.getBoundingClientRect();
+      top = clientRect.top + $colorDom.offsetHeight;
+      left = /** @type {HTMLElement}*/ (event.target.closest('.cherry-toolbar-color')).offsetLeft + clientRect.left;
+    } else {
+      const $colorDom = /** @type {HTMLElement}*/ (event.target.closest('.cherry-toolbar-color'));
+      const clientRect = $colorDom.getBoundingClientRect();
+      top = clientRect.top + $colorDom.offsetHeight;
+      left = clientRect.left;
+    }
+    this.updateMarkdown = false;
+    // 【TODO】需要增加getMoreSelection的逻辑
+    this.bubbleColor.toggle({
+      left,
+      top,
+      $color: this,
+    });
   }
 }
 
@@ -67,8 +129,9 @@ export default class Color extends MenuBase {
  * 调色盘
  */
 class BubbleColor {
-  constructor(editor) {
-    this.editor = editor;
+  constructor($cherry) {
+    this.editor = $cherry.editor;
+    this.$cherry = $cherry;
     this.init();
     this.initAction();
   }
@@ -155,7 +218,10 @@ class BubbleColor {
     const colorStackDOM = this.colorStack
       .map(
         (color) =>
-          `<span class="cherry-color-item" unselectable="on" data-val="${color}"
+          `<span class="cherry-color-item cherry-color-item__${color.replace(
+            '#',
+            '',
+          )}" unselectable="on" data-val="${color}"
                   style="background-color:${color}"></span>`,
       )
       .join('');
@@ -168,12 +234,12 @@ class BubbleColor {
     $colorWrap.classList.add('cherry-dropdown');
     const $textWrap = document.createElement('div');
     $textWrap.classList.add('cherry-color-text');
-    $textWrap.innerHTML = this.getFontColorDom('文本颜色');
+    $textWrap.innerHTML = this.getFontColorDom(this.$cherry.locale.fontColor);
     $colorWrap.appendChild($textWrap);
 
     const $bgWrap = document.createElement('div');
     $bgWrap.classList.add('cherry-color-bg');
-    $bgWrap.innerHTML = this.getFontColorDom('背景颜色');
+    $bgWrap.innerHTML = this.getFontColorDom(this.$cherry.locale.fontBgColor);
     $colorWrap.appendChild($bgWrap);
 
     return $colorWrap;
@@ -186,13 +252,19 @@ class BubbleColor {
 
   onClick() {
     if (this.type === 'text') {
+      if (/^!!#\S+ [\s\S]+?!!/.test(this.selection)) {
+        return this.selection.replace(/^!!#\S+ ([\s\S]+?)!!/, `!!${this.colorValue} $1!!`);
+      }
       return `!!${this.colorValue} ${this.selection}!!`;
+    }
+    if (/^!!!#\S+ [\s\S]+?!!!/.test(this.selection)) {
+      return this.selection.replace(/^!!!#\S+ ([\s\S]+?)!!!/, `!!!${this.colorValue} $1!!!`);
     }
     return `!!!${this.colorValue} ${this.selection}!!!`;
   }
 
   initAction() {
-    const self = this;
+    // const self = this;
     this.dom.addEventListener(
       'click',
       (evt) => {
@@ -202,27 +274,25 @@ class BubbleColor {
           return false;
         }
         this.type = target.closest('.cherry-color-text') ? 'text' : 'bg';
-        const selections = this.editor.editor.getSelections();
-        const res = selections.map((selection, index, srcArray) => this.onClick() || srcArray[index]);
-        self.editor.editor.replaceSelections(res);
-        self.editor.editor.focus();
+        this.$color.setCacheOnce({ type: this.type, color: this.colorValue });
+        this.$color.fire(null);
       },
       false,
     );
-    this.dom.addEventListener('EditorHideToolbarSubMenu', () => {
-      if (this.dom.style.display !== 'none') {
-        this.dom.style.display = 'none';
-      }
-    });
   }
 
   /**
-   * 在对应的坐标展示调色盘
+   * 在对应的坐标展示/关闭调色盘
    * @param {Object} 坐标
    */
-  show({ left, top }) {
+  toggle({ left, top, $color }) {
+    if (this.dom.style.display?.length > 0 && this.dom.style.display !== 'none') {
+      this.dom.style.display = 'none';
+      return;
+    }
     this.dom.style.left = `${left}px`;
     this.dom.style.top = `${top}px`;
     this.dom.style.display = 'block';
+    this.$color = $color;
   }
 }

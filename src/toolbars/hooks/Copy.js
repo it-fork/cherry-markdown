@@ -13,19 +13,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import juice from 'juice';
+// import juice from 'juice';
 import MenuBase from '@/toolbars/MenuBase';
+import { copyToClip } from '@/utils/copy';
 /**
  * 复制按钮，用来复制预览区的html内容
  * 该操作会将预览区的css样式以行内样式的形式插入到html内容里，从而保证粘贴时样式一致
  */
 export default class Copy extends MenuBase {
-  constructor(editor, engine, toolbar) {
-    super(editor);
-    this.previewer = toolbar.options.previewer;
+  constructor($cherry) {
+    super($cherry);
+    this.previewer = $cherry.previewer;
     this.isLoading = false;
     this.updateMarkdown = false;
     this.setName('copy', 'copy');
+    this.lastIconOuterHtml = '';
   }
 
   async adaptWechat(rawHtml) {
@@ -50,7 +52,9 @@ export default class Copy extends MenuBase {
   }
 
   getStyleFromSheets(keyword) {
-    const sheets = Array.from(document.styleSheets).filter((item) => item.cssRules[0].cssText.indexOf(keyword) > -1);
+    const sheets = Array.from(document.styleSheets).filter(
+      (item) => item.cssRules[0] && item.cssRules[0].cssText.indexOf(keyword) > -1,
+    );
     return `<style>${sheets.reduce((html, sheet) => {
       return html + Array.from(sheet.cssRules).reduce((html, rule) => html + rule.cssText, '');
     }, '')}</style>`;
@@ -76,11 +80,11 @@ export default class Copy extends MenuBase {
   toggleLoading() {
     // 切换loading状态
     if (this.isLoading) {
-      const loadingButton = document.querySelector('.icon-loading');
-      loadingButton.outerHTML = '<i class="ch-icon ch-icon-copy" title="复制内容"></i>';
+      this.dom.lastElementChild.outerHTML = this.lastIconOuterHtml;
+      this.lastIconOuterHtml = '';
     } else {
-      const copyButton = document.querySelector('.ch-icon-copy');
-      copyButton.outerHTML = '<div class="icon-loading loading"></div>';
+      this.lastIconOuterHtml = this.dom.lastElementChild.outerHTML;
+      this.dom.lastElementChild.outerHTML = '<div class="icon-loading loading"></div>';
     }
     this.isLoading = !this.isLoading;
   }
@@ -101,11 +105,10 @@ export default class Copy extends MenuBase {
     // 将css样式以行内样式的形式插入到html内容里
     this.adaptWechat(html).then((html) => {
       copyToClip(
-        juice(
-          `<div data-inline-code-theme="${inlineCodeTheme}" data-code-block-theme="${codeBlockTheme}">
-            <div class="cherry-markdown">${html}</div>
-          </div>${mathStyle + echartStyle + cherryStyle}`,
-        ),
+        `${mathStyle + echartStyle + cherryStyle}
+        <div data-inline-code-theme="${inlineCodeTheme}" data-code-block-theme="${codeBlockTheme}">
+          <div class="cherry-markdown">${html}</div>
+        </div>`,
       );
       this.toggleLoading();
     });
@@ -135,19 +138,4 @@ function convertImgToBase64(url, callback, outputFormat) {
     };
     img.src = url;
   });
-}
-
-/**
- * 将复制的内容赋值到系统剪切板中
- * @param {string} str 要复制的内容
- */
-function copyToClip(str) {
-  function listener(e) {
-    e.clipboardData.setData('text/html', str);
-    e.clipboardData.setData('text/plain', str);
-    e.preventDefault();
-  }
-  document.addEventListener('copy', listener);
-  document.execCommand('copy');
-  document.removeEventListener('copy', listener);
 }

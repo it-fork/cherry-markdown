@@ -17,6 +17,9 @@ import ParagraphBase from '@/core/ParagraphBase';
 import { escapeFormulaPunctuations, LoadMathModule } from '@/utils/mathjax';
 import { getHTML } from '@/utils/dom';
 import { isBrowser } from '@/utils/env';
+import { getTableRule, isLookbehindSupported } from '@/utils/regexp';
+import { replaceLookbehind } from '@/utils/lookbehind-replace';
+
 /**
  * 行内公式的语法
  * 虽然叫做行内公式，Cherry依然将其视为“段落级语法”，因为其具备排他性并且需要优先渲染
@@ -34,40 +37,58 @@ export default class InlineMath extends ParagraphBase {
     this.engine = isBrowser() ? config.engine ?? 'MathJax' : 'node';
   }
 
-  toHtml(wholeMatch, m1) {
+  toHtml(wholeMatch, leadingChar, m1) {
     if (!m1) {
       return wholeMatch;
     }
     LoadMathModule.bind(this)('engine');
     const linesArr = m1.match(/\n/g);
     const lines = linesArr ? linesArr.length + 2 : 2;
-    const sign = this.$engine.md5(wholeMatch);
+    const sign = this.$engine.hash(wholeMatch);
+    // 既无MathJax又无katex时，原样输出
+    let result = '';
     if (this.engine === 'katex' && this.katex?.renderToString) {
       // katex渲染
       const html = this.katex.renderToString(m1, {
         throwOnError: false,
       });
-      const result = `<span class="Cherry-InlineMath" data-type="mathBlock" data-lines="${lines}">${html}</span>`;
-      return this.pushCache(result, ParagraphBase.IN_PARAGRAPH_CACHE_KEY_PREFIX + sign);
-    }
-
-    if (this.MathJax?.tex2svg) {
+      result = `${leadingChar}<span class="Cherry-InlineMath" data-type="mathBlock" data-lines="${lines}">${html}</span>`;
+    } else if (this.MathJax?.tex2svg) {
       // MathJax渲染
       const svg = getHTML(this.MathJax.tex2svg(m1, { em: 12, ex: 6, display: false }), true);
-      const result = `<span class="Cherry-InlineMath" data-type="mathBlock" data-lines="${lines}">${svg}</span>`;
-      return this.pushCache(result, ParagraphBase.IN_PARAGRAPH_CACHE_KEY_PREFIX + sign);
-    }
-    // 既无MathJax又无katex时，原样输出
-    const result = `<span class="Cherry-InlineMath" data-type="mathBlock"
+      result = `${leadingChar}<span class="Cherry-InlineMath" data-type="mathBlock" data-lines="${lines}">${svg}</span>`;
+    } else {
+      result = `${leadingChar}<span class="Cherry-InlineMath" data-type="mathBlock"
         data-lines="${lines}">$${escapeFormulaPunctuations(m1)}$</span>`;
+    }
+
     return this.pushCache(result, ParagraphBase.IN_PARAGRAPH_CACHE_KEY_PREFIX + sign);
   }
 
   beforeMakeHtml(str) {
+    let $str = str;
+    // 格里处理行内公式，让一个td里的行内公式语法生效，让跨td的行内公式语法失效
+    $str = $str.replace(getTableRule(true), (whole, ...args) => {
+      return whole
+        .split('|')
+        .map((oneTd) => {
+          return this.makeInlineMath(oneTd);
+        })
+        .join('|')
+        .replace(/\\~D/g, '~D') // 出现反斜杠的情况（如/$e=m^2$）会导致多一个反斜杠，这里替换掉
+        .replace(/~D/g, '\\~D');
+    });
+    return this.makeInlineMath($str);
+  }
+
+  makeInlineMath(str) {
     if (!this.test(str)) {
       return str;
     }
-    return str.replace(this.RULE.reg, this.toHtml.bind(this));
+    if (isLookbehindSupported()) {
+      return str.replace(this.RULE.reg, this.toHtml.bind(this));
+    }
+    return replaceLookbehind(str, this.RULE.reg, this.toHtml.bind(this), true, 1);
   }
 
   makeHtml(str) {
@@ -75,7 +96,11 @@ export default class InlineMath extends ParagraphBase {
   }
 
   rule() {
-    const ret = { begin: '~D\\n?', end: '~D', content: '(.*?)\\n?' };
+    const ret = {
+      begin: isLookbehindSupported() ? '((?<!\\\\))~D\\n?' : '(^|[^\\\\])~D\\n?',
+      content: '(.*?)\\n?',
+      end: '~D',
+    };
     ret.reg = new RegExp(ret.begin + ret.content + ret.end, 'g');
     return ret;
   }

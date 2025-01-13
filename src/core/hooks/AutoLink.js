@@ -20,9 +20,20 @@ import { compileRegExp, EMAIL, EMAIL_INLINE, URL_INLINE_NO_SLASH, URL, URL_NO_SL
 export default class AutoLink extends SyntaxBase {
   static HOOK_NAME = 'autoLink';
 
+  static escapePreservedSymbol = (text) => {
+    // _ prevent conflict with emphasis
+    // _ => 0x5f
+    // * => 0x2a
+    return text.replace(/_/g, '&#x5f;').replace(/\*/g, '&#x2a;');
+  };
+
   constructor({ config, globalConfig }) {
     super({ config });
-    this.urlProcessor = globalConfig.urlProcessor;
+    this.enableShortLink = !!config.enableShortLink;
+    this.shortLinkLength = config.shortLinkLength;
+    // eslint-disable-next-line no-nested-ternary
+    this.target = config.target ? `target="${config.target}"` : !!config.openNewPage ? 'target="_blank"' : '';
+    this.rel = config.rel ? `rel="${config.rel}"` : '';
   }
 
   isLinkInHtmlAttribute(str, index, linkLength) {
@@ -122,7 +133,7 @@ export default class AutoLink extends SyntaxBase {
           return match;
         case 'mailto:': // email
           if (EMAIL.test(address)) {
-            return `${prefix}<a href="${encodeURIOnce(`${$protocol}${address}`)}" rel="nofollow">${$e(
+            return `${prefix}<a href="${encodeURIOnce(`${$protocol}${address}`)}" ${this.target} ${this.rel}>${$e(
               address,
             )}</a>${suffix}`;
           }
@@ -132,7 +143,9 @@ export default class AutoLink extends SyntaxBase {
           if (prefix === suffix || !isWrappedByBracket) {
             // mailto
             if (EMAIL.test(address)) {
-              return `${prefix}<a href="mailto:${encodeURIOnce(address)}" rel="nofollow">${$e(address)}</a>${suffix}`;
+              return `${prefix}<a href="mailto:${encodeURIOnce(address)}" ${this.target} ${this.rel}>${$e(
+                address,
+              )}</a>${suffix}`;
             }
             // 不识别无协议头的URL，且开头不应该含有斜杠
             if (URL_NO_SLASH.test(address)) {
@@ -145,7 +158,7 @@ export default class AutoLink extends SyntaxBase {
           if (isWrappedByBracket) {
             // mailto
             if (EMAIL.test(address)) {
-              return `<a href="mailto:${encodeURIOnce(address)}" rel="nofollow">${$e(address)}</a>`;
+              return `<a href="mailto:${encodeURIOnce(address)}" ${this.target} ${this.rel}>${$e(address)}</a>`;
             }
             // 可识别任意协议的URL，或不以斜杠开头的URL
             if (URL.test(address) || URL_NO_SLASH.test(address)) {
@@ -201,9 +214,19 @@ export default class AutoLink extends SyntaxBase {
   renderLink(url, text) {
     let linkText = text;
     if (typeof linkText !== 'string') {
-      linkText = url;
+      if (this.enableShortLink) {
+        const Url = url.replace(/^https?:\/\//i, '');
+        linkText = `${Url.substring(0, this.shortLinkLength)}${Url.length > this.shortLinkLength ? '...' : ''}`;
+      } else {
+        linkText = url;
+      }
     }
-    const processedURL = this.urlProcessor(url, 'autolink');
-    return `<a href="${encodeURIOnce(processedURL)}" rel="nofollow">${$e(linkText)}</a>`;
+    const processedURL = this.$engine.urlProcessor(url, 'autolink');
+    const safeUri = encodeURIOnce(processedURL);
+    const displayUri = $e(linkText);
+    const additionalAttrs = [this.target, this.rel].filter(Boolean).join(' ');
+    return `<a href="${AutoLink.escapePreservedSymbol(safeUri)}" title="${AutoLink.escapePreservedSymbol(
+      $e(url),
+    )}" ${additionalAttrs}>${AutoLink.escapePreservedSymbol(displayUri)}</a>`;
   }
 }

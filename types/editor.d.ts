@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 import CodeMirror from 'codemirror';
+import Cherry from '../src/Cherry.js';
+import { EditorMode } from './cherry.js';
 
 interface EditorEventMap {
   onBlur: FocusEvent;
@@ -37,12 +39,20 @@ type EditorPasteEventHandler = (
 ) => void;
 
 export type EditorConfiguration = {
-  id: string;
+  id?: string; // textarea 的id属性值
+  name?: string; // textarea 的name属性值
+  autoSave2Textarea?: boolean; // 是否自动将编辑区的内容回写到textarea里
   editorDom: HTMLElement;
   wrapperDom: HTMLElement;
   toolbars: any;
   value?: string;
   convertWhenPaste?: boolean;
+  keyMap?: 'sublime' | 'vim'; // 快捷键风格，目前仅支持 sublime 和 vim
+  keepDocumentScrollAfterInit?: boolean;
+  /** 是否高亮全角符号 ·|￥|、|：|“|”|【|】|（|）|《|》 */
+  showFullWidthMark?: boolean;
+  /** 是否显示联想框 */
+  showSuggestList?: boolean;
   codemirror: CodeMirror.EditorConfiguration;
   onKeydown: EditorEventCallback<EditorEventMap['onKeydown']>;
   onFocus: EditorEventCallback<EditorEventMap['onFocus']>;
@@ -54,4 +64,9 @@ export type EditorConfiguration = {
   /** 预览区域跟随编辑器光标自动滚动 */
   autoScrollByCursor: boolean;
   fileUpload?: (file: File, callback: (fileUrl: string) => void) => void;
+  $cherry?: Cherry;
+  /** 书写风格，normal 普通 | typewriter 打字机 | focus 专注，默认normal */
+  writingStyle?: string;
+  /** 编辑器初始化后的模式 */
+  defaultModel?: EditorMode;
 };

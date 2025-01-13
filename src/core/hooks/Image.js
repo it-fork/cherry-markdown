@@ -15,62 +15,57 @@
  */
 import SyntaxBase from '@/core/SyntaxBase';
 import { escapeHTMLSpecialCharOnce as $e, encodeURIOnce } from '@/utils/sanitize';
-import { processExtendAttributesInAlt, processExtendStyleInAlt } from '@/utils/image';
+import imgAltHelper from '@/utils/image';
 import { compileRegExp, isLookbehindSupported, NOT_ALL_WHITE_SPACES_INLINE } from '@/utils/regexp';
 import { replaceLookbehind } from '@/utils/lookbehind-replace';
 import UrlCache from '@/UrlCache';
-
-const replacerFactory = function (type, match, leadingChar, alt, link, title, posterContent, config, globalConfig) {
-  const refType = typeof link === 'undefined' ? 'ref' : 'url';
-  let attrs = '';
-  if (refType === 'ref') {
-    // TODO: 全局引用
-    return match;
-  }
-
-  if (refType === 'url') {
-    const extent = processExtendAttributesInAlt(alt);
-    let style = processExtendStyleInAlt(alt);
-    if (style) {
-      style = ` style="${style}" `;
-    }
-    attrs = title && title.trim() !== '' ? ` title="${$e(title)}"` : '';
-    if (posterContent) {
-      attrs += ` poster=${encodeURIOnce(posterContent)}`;
-    }
-
-    const processedURL = globalConfig.urlProcessor(link, type);
-    const defaultWrapper = `<${type} src="${UrlCache.set(
-      encodeURIOnce(processedURL),
-    )}"${attrs} ${extent} ${style} controls="controls">${$e(alt || '')}</${type}>`;
-    return `${leadingChar}${config.videoWrapper ? config.videoWrapper(link) : defaultWrapper}`;
-  }
-  // should never happen
-  return match;
-};
 
 export default class Image extends SyntaxBase {
   static HOOK_NAME = 'image';
 
   constructor({ config, globalConfig }) {
     super(null);
-    this.urlProcessor = globalConfig.urlProcessor;
+    this.config = config;
     // TODO: URL Validator
-    this.extendMedia = {
-      tag: ['video', 'audio'],
-      replacer: {
-        video(match, leadingChar, alt, link, title, poster) {
-          return replacerFactory('video', match, leadingChar, alt, link, title, poster, config, globalConfig);
-        },
-        audio(match, leadingChar, alt, link, title, poster) {
-          return replacerFactory('audio', match, leadingChar, alt, link, title, poster, config, globalConfig);
-        },
-      },
-    };
+    this.extendMedia = { tag: ['video', 'audio'] };
     this.RULE = this.rule(this.extendMedia);
   }
 
-  toHtml(match, leadingChar, alt, link, title, ref) {
+  replaceToHtml(type, match, leadingChar, alt, link, title, poster) {
+    const refType = typeof link === 'undefined' ? 'ref' : 'url';
+    let attrs = '';
+    if (refType === 'ref') {
+      // TODO: 全局引用
+      return match;
+    }
+
+    if (refType === 'url') {
+      const extent = imgAltHelper.processExtendAttributesInAlt(alt);
+      let { extendStyles: style, extendClasses: classes } = imgAltHelper.processExtendStyleInAlt(alt);
+      if (style) {
+        style = ` style="${style}" `;
+      }
+      if (classes) {
+        classes = ` class="${classes}" `;
+      }
+      attrs = title && title.trim() !== '' ? ` title="${$e(title)}"` : '';
+      if (poster) {
+        attrs += ` poster="${encodeURIOnce(poster)}"`;
+      }
+
+      const processedURL = this.$engine.urlProcessor(link, type);
+      const defaultWrapper = `<${type} src="${UrlCache.set(
+        encodeURIOnce(processedURL),
+      )}"${attrs} ${extent} ${style} ${classes} controls="controls">${$e(alt || '')}</${type}>`;
+      return `${leadingChar}${
+        this.config.videoWrapper ? this.config.videoWrapper(link, type, defaultWrapper) : defaultWrapper
+      }`;
+    }
+    // should never happen
+    return match;
+  }
+
+  toHtml(match, leadingChar, alt, link, title, ref, extendAttrs) {
     // console.log(match, alt, link, ref, title);
     const refType = typeof link === 'undefined' ? 'ref' : 'url';
     let attrs = '';
@@ -79,10 +74,13 @@ export default class Image extends SyntaxBase {
       return match;
     }
     if (refType === 'url') {
-      const extent = processExtendAttributesInAlt(alt);
-      let style = processExtendStyleInAlt(alt);
+      const extent = imgAltHelper.processExtendAttributesInAlt(alt);
+      let { extendStyles: style, extendClasses: classes } = imgAltHelper.processExtendStyleInAlt(alt);
       if (style) {
         style = ` style="${style}" `;
+      }
+      if (classes) {
+        classes = ` class="${classes}" `;
       }
       attrs = title && title.trim() !== '' ? ` title="${$e(title.replace(/["']/g, ''))}"` : '';
       let srcProp = 'src';
@@ -93,19 +91,25 @@ export default class Image extends SyntaxBase {
         srcProp = imgAttrs.srcProp || srcProp;
         srcValue = imgAttrs.src || link;
       }
+      const extendAttrStr = extendAttrs
+        ? extendAttrs
+            .replace(/[{}]/g, '')
+            .replace(/([^=\s]+)=([^\s]+)/g, '$1="$2"')
+            .replace(/&/g, '&amp;') // 对&多做一次转义，cherry现有的机制会自动把&amp;转成&，只有多做一次转义才能抵消cherry的机制
+        : '';
       return `${leadingChar}<img ${srcProp}="${UrlCache.set(
-        encodeURIOnce(this.urlProcessor(srcValue, 'image')),
-      )}" ${extent} ${style} alt="${$e(alt || '')}"${attrs}/>`;
+        encodeURIOnce(this.$engine.urlProcessor(srcValue, 'image')),
+      )}" ${extent} ${style} ${classes} alt="${$e(alt || '')}"${attrs} ${extendAttrStr}/>`;
     }
     // should never happen
     return match;
   }
 
   toMediaHtml(match, leadingChar, mediaType, alt, link, title, ref, posterWrap, poster, ...args) {
-    if (!this.extendMedia.replacer[mediaType]) {
+    if (!/(video|audio)/.test(mediaType)) {
       return match;
     }
-    return this.extendMedia.replacer[mediaType].call(this, match, leadingChar, alt, link, title, poster, ...args);
+    return this.replaceToHtml(mediaType, match, leadingChar, alt, link, title, poster);
   }
 
   makeHtml(str) {
@@ -127,9 +131,9 @@ export default class Image extends SyntaxBase {
     return $str;
   }
 
-  afterMakeHtml(str) {
-    return UrlCache.restoreAll(str);
-  }
+  // afterMakeHtml(str) {
+  //   return UrlCache.restoreAll(str);
+  // }
 
   testMedia(str) {
     return this.RULE.regExtend && this.RULE.regExtend.test(str);
@@ -145,7 +149,7 @@ export default class Image extends SyntaxBase {
         `${
           '(?:' +
           '\\(' +
-          '([^"][^\\s]+?)' + // ?<link> url
+          '((?:[^\\s()]*\\([^\\s()]*\\)[^\\s()]*)+|(?:[^"][^\\s]+?))' + // ?<link> url
           '(?:[ \\t]((?:".*?")|(?:\'.*?\')))?' + // ?<title> optional
           '\\)' +
           '|' + // or
@@ -153,7 +157,7 @@ export default class Image extends SyntaxBase {
         }${NOT_ALL_WHITE_SPACES_INLINE})\\]` + // ?<ref> global ref
           ')',
       ].join(''),
-      end: '', // TODO: extend attrs e.g. {width=50 height=60}
+      end: '({[^{}]+?})?', // extend attrs e.g. {width=50 height=60}
     };
     if (extendMedia) {
       const extend = { ...ret };

@@ -17,13 +17,13 @@ import vDH from 'virtual-dom/h';
 import vDDiff from 'virtual-dom/diff';
 import vDPatch from 'virtual-dom/patch';
 import MyersDiff from './utils/myersDiff';
-import { getBlockTopAndHeightWithMargin, elementsFromPoint } from './utils/dom';
+import { getBlockTopAndHeightWithMargin } from './utils/dom';
 import Logger from './Logger';
-import Event from './Event';
 // import locale from './utils/locale';
 import { addEvent, removeEvent } from './utils/event';
-import { exportPDF, exportScreenShot } from './utils/export';
+import { exportPDF, exportScreenShot, exportMarkdownFile, exportHTMLFile } from './utils/export';
 import PreviewerBubble from './toolbars/PreviewerBubble';
+import LazyLoadImg from '@/utils/lazyLoadImg';
 
 let onScroll = () => {}; // store in memory for remove event
 
@@ -62,11 +62,6 @@ export default class Previewer {
   constructor(options) {
     /**
      * @property
-     * @type {string} 实例ID
-     */
-    this.instanceId = `cherry-previewer-${new Date().getTime()}`;
-    /**
-     * @property
      * @type {import('~types/previewer').PreviewerOptions}
      */
     this.options = {
@@ -77,6 +72,7 @@ export default class Previewer {
       minBlockPercentage: 0.2, // editor或previewer所占宽度比例的最小值
       value: '',
       enablePreviewerBubble: true,
+      floatWhenClosePreviewer: false, // 是否在关闭预览区时，将预览区浮动
       afterUpdateCallBack: [],
       isPreviewOnly: false,
       previewerCache: {
@@ -85,9 +81,41 @@ export default class Previewer {
         htmlChanged: false,
         layout: {},
       },
+      /**
+       * 配置图片懒加载的逻辑
+       * 如果不希望图片懒加载，可配置成 lazyLoadImg = {maxNumPerTime: 6, autoLoadImgNum: -1}
+       */
+      lazyLoadImg: {
+        // 加载图片时如果需要展示loading图，则配置loading图的地址
+        loadingImgPath: '',
+        // 同一时间最多有几个图片请求，最大同时加载6张图片
+        maxNumPerTime: 2,
+        // 不进行懒加载处理的图片数量，如果为0，即所有图片都进行懒加载处理， 如果设置为-1，则所有图片都不进行懒加载处理
+        noLoadImgNum: 5,
+        // 首次自动加载几张图片（不论图片是否滚动到视野内），autoLoadImgNum = -1 表示会自动加载完所有图片
+        autoLoadImgNum: 5,
+        // 针对加载失败的图片 或 beforeLoadOneImgCallback 返回false 的图片，最多尝试加载几次，为了防止死循环，最多5次。以图片的src为纬度统计重试次数
+        maxTryTimesPerSrc: 2,
+        // 加载一张图片之前的回调函数，函数return false 会终止加载操作
+        beforeLoadOneImgCallback: (img) => {},
+        // 加载一张图片失败之后的回调函数
+        failLoadOneImgCallback: (img) => {},
+        // 加载一张图片之后的回调函数，如果图片加载失败，则不会回调该函数
+        afterLoadOneImgCallback: (img) => {},
+        // 加载完所有图片后调用的回调函数
+        afterLoadAllImgCallback: () => {},
+      },
     };
 
     Object.assign(this.options, options);
+    this.$cherry = this.options.$cherry;
+    this.instanceId = this.$cherry.getInstanceId();
+    /**
+     * @property
+     * @private
+     * @type {{ timer?: number; destinationTop?: number }}
+     */
+    this.animation = {};
   }
 
   init(editor) {
@@ -100,30 +128,76 @@ export default class Previewer {
     this.bindScroll();
     this.editor = editor;
     this.bindDrag();
-    this.$initPreviewerBubble(editor);
+    this.$initPreviewerBubble();
+    this.lazyLoadImg = new LazyLoadImg(this.options.lazyLoadImg, this);
+    this.lazyLoadImg.doLazyLoad();
+    this.bindClick();
+    this.onMouseDown();
+    this.onSizeChange();
   }
 
-  $initPreviewerBubble(editor) {
-    if (this.options.enablePreviewerBubble) {
-      this.previewerBubble = new PreviewerBubble(this, editor);
-    }
+  /**
+   * “监听”编辑器的尺寸变化，变化时更新拖拽条的位置
+   */
+  onSizeChange() {
+    // 创建一个新的 ResizeObserver 实例
+    const resizeObserver = new ResizeObserver(() => {
+      this.syncVirtualLayoutFromReal();
+    });
+    // 开始监听元素
+    resizeObserver.observe(this.$cherry.wrapperDom);
   }
 
-  getDomContainer = () =>
-    /** @type {HTMLDivElement} */ (this.isMobilePreview
-      ? document.querySelector('.cherry-mobile-previewer-content')
-      : this.options.previewerDom);
+  $initPreviewerBubble() {
+    this.previewerBubble = new PreviewerBubble(this);
+  }
+
+  /**
+   * @returns {HTMLElement}
+   */
+  getDomContainer() {
+    return this.isMobilePreview
+      ? this.options.previewerDom.querySelector('.cherry-mobile-previewer-content')
+      : this.options.previewerDom;
+  }
 
   getDom() {
     return this.options.previewerDom;
   }
 
-  getValue() {
-    return this.options.previewerDom.innerHTML;
+  /**
+   * 获取预览区内的html内容
+   * @param {boolean} wrapTheme 是否在外层包裹主题class
+   * @returns html内容
+   */
+  getValue(wrapTheme = true) {
+    let html = '';
+    if (this.isPreviewerHidden()) {
+      html = this.options.previewerCache.html;
+    } else {
+      html = this.getDomContainer().innerHTML;
+    }
+    // 需要未加载的图片替换成原始图片
+    html = this.lazyLoadImg.changeDataSrc2Src(html);
+    if (!wrapTheme || !this.$cherry.wrapperDom) {
+      return html;
+    }
+    const inlineCodeTheme = this.$cherry.wrapperDom.getAttribute('data-inline-code-theme');
+    const codeBlockTheme = this.$cherry.wrapperDom.getAttribute('data-code-block-theme');
+    return `<div data-inline-code-theme="${inlineCodeTheme}" data-code-block-theme="${codeBlockTheme}">${html}</div>`;
   }
 
   isPreviewerHidden() {
     return this.options.previewerDom.classList.contains('cherry-previewer--hidden');
+  }
+
+  isPreviewerFloat() {
+    const floatDom = this.$cherry.cherryDom.querySelector('.float-previewer-wrap');
+    return this.$cherry.cherryDom.contains(floatDom);
+  }
+
+  isPreviewerNeedFloat() {
+    return this.options.floatWhenClosePreviewer;
   }
 
   calculateRealLayout(editorWidth) {
@@ -172,19 +246,25 @@ export default class Previewer {
 
     const { editorMaskDom, previewerMaskDom, virtualDragLineDom: virtualLineDom } = this.options;
 
-    virtualLineDom.style.height = `${editorHeight}px`;
-    virtualLineDom.style.top = `${editorTop}px`;
-    virtualLineDom.style.left = `${previewerLeft}px`;
+    this.$tryChangeValue(virtualLineDom, 'top', `${editorTop}px`);
+    this.$tryChangeValue(virtualLineDom, 'left', `${previewerLeft}px`);
+    this.$tryChangeValue(virtualLineDom, 'bottom', '0px');
 
-    editorMaskDom.style.height = `${editorHeight}px`;
-    editorMaskDom.style.top = `${editorTop}px`;
-    editorMaskDom.style.left = '0px';
-    editorMaskDom.style.width = `${editorWidth}px`;
+    this.$tryChangeValue(editorMaskDom, 'height', `${editorHeight}px`);
+    this.$tryChangeValue(editorMaskDom, 'top', `${editorTop}px`);
+    this.$tryChangeValue(editorMaskDom, 'left', '0px');
+    this.$tryChangeValue(editorMaskDom, 'width', `${editorWidth}px`);
 
-    previewerMaskDom.style.height = `${editorHeight}px`;
-    previewerMaskDom.style.top = `${editorTop}px`;
-    previewerMaskDom.style.left = `${previewerLeft}px`;
-    previewerMaskDom.style.width = `${previewerWidth}px`;
+    this.$tryChangeValue(previewerMaskDom, 'height', `${editorHeight}px`);
+    this.$tryChangeValue(previewerMaskDom, 'top', `${editorTop}px`);
+    this.$tryChangeValue(previewerMaskDom, 'left', `${previewerLeft}px`);
+    this.$tryChangeValue(previewerMaskDom, 'width', `${previewerWidth}px`);
+  }
+
+  $tryChangeValue(obj, key, value) {
+    if (obj.style[key] !== value) {
+      obj.style[key] = value;
+    }
   }
 
   calculateVirtualLayout(editorLeft, editorRight) {
@@ -331,55 +411,39 @@ export default class Previewer {
         this.editor.scrollToLineNum(0, 0, 1);
         return;
       }
-      if (domContainer.scrollTop + domContainer.offsetHeight > domContainer.scrollHeight) {
+      // 判定预览区域是否滚动到底部的逻辑，增加10px的冗余
+      if (domContainer.scrollTop + domContainer.offsetHeight + 10 > domContainer.scrollHeight) {
         this.editor.scrollToLineNum(null);
         return;
       }
-      // 获取预览容器基准坐标
-      const basePoint = domContainer.getBoundingClientRect();
-      // 观察点坐标，取容器中轴线
-      const watchPoint = {
-        x: basePoint.left + basePoint.width / 2,
-        y: basePoint.top + 1,
-      };
-      // 获取观察点处的DOM
-      const targetElements = elementsFromPoint(watchPoint.x, watchPoint.y);
+      const domPosition = domContainer.getBoundingClientRect();
       let targetElement;
-      for (let i = 0; i < targetElements.length; i++) {
-        if (domContainer.contains(targetElements[i])) {
-          targetElement = targetElements[i];
+      let lines = 0;
+      const elements = domContainer.children;
+      for (let i = 0; i < elements.length; i++) {
+        const element = elements[i];
+        if (element.getBoundingClientRect().top < domPosition.top) {
+          targetElement = element;
+          const currentLines = element.getAttribute('data-lines') ?? 0;
+          lines += +currentLines;
+        } else {
           break;
         }
       }
-      if (!targetElement || targetElement === domContainer) {
+      if (!targetElement) {
+        this.editor.scrollToLineNum(0, 0, 1);
         return;
-      }
-      // 获取观察点处最近的markdown元素
-      let mdElement = targetElement.closest('[data-sign]');
-      // 由于新增脚注，内部容器也有可能存在data-sign，所以需要循环往父级找
-      while (mdElement && mdElement.parentElement && mdElement.parentElement !== domContainer) {
-        mdElement = mdElement.parentElement.closest('[data-sign]');
-      }
-      if (!mdElement) {
-        return;
-      }
-      // 计算当前焦点容器的所在行数
-      let lines = 0;
-      let element = mdElement;
-      while (element) {
-        lines += +element.getAttribute('data-lines');
-        element = element.previousElementSibling; // 取上一个兄弟节点，直到为null
       }
       // markdown元素存在margin，getBoundingRect不能获取到margin
-      const mdElementStyle = getComputedStyle(mdElement);
+      const mdElementStyle = getComputedStyle(targetElement);
       const marginTop = parseFloat(mdElementStyle.marginTop);
       const marginBottom = parseFloat(mdElementStyle.marginBottom);
       // markdown元素基于当前页面的矩形模型
-      const mdRect = mdElement.getBoundingClientRect();
+      const mdRect = targetElement.getBoundingClientRect();
       const mdActualHeight = mdRect.height + marginTop + marginBottom;
       // (mdRect.y - marginTop)为顶部触达区域，basePoint.y为预览区域的顶部，故可视范围应减去预览区域的偏移
-      const mdOffsetTop = mdRect.y - marginTop - basePoint.y;
-      const lineNum = +mdElement.getAttribute('data-lines'); // 当前markdown元素所占行数
+      const mdOffsetTop = mdRect.y - marginTop - domPosition.y;
+      const lineNum = +targetElement.getAttribute('data-lines'); // 当前markdown元素所占行数
       const percent = (100 * Math.abs(mdOffsetTop)) / mdActualHeight / 100;
       // console.log('destLine:', lines, percent,
       //  mdRect.height + marginTop + marginBottom, mdOffsetTop, mdElement);
@@ -389,6 +453,18 @@ export default class Previewer {
       // return this.editor.scrollToLineNum(lines - lineNum, 0, 0);
     };
     addEvent(domContainer, 'scroll', onScroll, false);
+    addEvent(
+      domContainer,
+      'wheel',
+      () => {
+        // 鼠标滚轮滚动时，强制监听滚动事件
+        this.disableScrollListener = false;
+        // 打断滚动动画
+        cancelAnimationFrame(this.animation.timer);
+        this.animation.timer = 0;
+      },
+      false,
+    );
   }
 
   removeScroll() {
@@ -401,12 +477,16 @@ export default class Previewer {
       return vDH('span', {}, []);
     }
     if (!dom.tagName) {
-      return dom.wholeText;
+      return dom.textContent;
     }
     const { tagName } = dom;
+
+    // skip all children if data-cm-atomic attribute is set
+    const isAtomic = 'true' === dom.getAttribute('data-cm-atomic');
+
     const myAttrs = this.$getAttrsForH(dom.attributes);
     const children = [];
-    if (dom.childNodes && dom.childNodes.length > 0) {
+    if (!isAtomic && dom.childNodes && dom.childNodes.length > 0) {
       for (let i = 0; i < dom.childNodes.length; i++) {
         children.push(this.$html2H(dom.childNodes[i]));
       }
@@ -429,11 +509,15 @@ export default class Previewer {
           continue;
         }
       }
-      if (/^(class|id|href|rel|target|src|title|controls|align|width|height|style)$/i.test(name)) {
+      if (/^(class|id|href|rel|target|src|title|controls|align|width|height|style|open|contenteditable)$/i.test(name)) {
         name = name === 'class' ? 'className' : name;
+        name = name === 'contenteditable' ? 'contentEditable' : name;
         if (name === 'style') {
           ret.style = ret.style ? ret.style : [];
           ret.style.push(value);
+        } else if (name === 'open') {
+          // 只要有open这个属性，就一定是true
+          ret[name] = true;
         } else {
           ret[name] = value;
         }
@@ -454,7 +538,7 @@ export default class Previewer {
       }
     }
     if (ret.style) {
-      ret.style = ret.style.join(';');
+      ret.style = { cssText: ret.style.join(';') }; // see virtual-dom implementation
     }
     return ret;
   }
@@ -523,6 +607,12 @@ export default class Previewer {
 
   $dealWithMyersDiffResult(result, oldContent, newContent, domContainer) {
     result.forEach((change) => {
+      if (newContent[change.newIndex].dom) {
+        // 把已经加载过的图片的data-src变成src
+        newContent[change.newIndex].dom.innerHTML = this.lazyLoadImg.changeLoadedDataSrc2Src(
+          newContent[change.newIndex].dom.innerHTML,
+        );
+      }
       switch (change.type) {
         case 'delete':
           domContainer.removeChild(oldContent[change.oldIndex].dom);
@@ -536,10 +626,28 @@ export default class Previewer {
           break;
         case 'update':
           try {
-            if (newContent[change.newIndex].dom.querySelector('svg')) {
+            // 处理表格包含图表的特殊场景
+            let hasUpdate = false;
+            if (
+              newContent[change.newIndex].dom.className === 'cherry-table-container' &&
+              newContent[change.newIndex].dom.querySelector('.cherry-table-figure') &&
+              oldContent[change.oldIndex].dom.querySelector('.cherry-table-figure')
+            ) {
+              oldContent[change.oldIndex].dom
+                .querySelector('.cherry-table-figure')
+                .replaceWith(newContent[change.newIndex].dom.querySelector('.cherry-table-figure'));
+              oldContent[change.oldIndex].dom.dataset.sign = newContent[change.oldIndex].dom.dataset.sign;
+              this.$updateDom(
+                newContent[change.newIndex].dom.querySelector('.cherry-table'),
+                oldContent[change.oldIndex].dom.querySelector('.cherry-table'),
+              );
+              hasUpdate = true;
+            } else if (newContent[change.newIndex].dom.querySelector('svg')) {
               throw new Error(); // SVG暂不使用patch更新
             }
-            this.$updateDom(newContent[change.newIndex].dom, oldContent[change.oldIndex].dom);
+            if (!hasUpdate) {
+              this.$updateDom(newContent[change.newIndex].dom, oldContent[change.oldIndex].dom);
+            }
           } catch (e) {
             domContainer.insertBefore(newContent[change.newIndex].dom, oldContent[change.oldIndex].dom);
             domContainer.removeChild(oldContent[change.oldIndex].dom);
@@ -571,15 +679,28 @@ export default class Previewer {
     }
   }
 
+  /**
+   * 强制重新渲染预览区域
+   */
+  refresh(html) {
+    const domContainer = this.getDomContainer();
+    domContainer.innerHTML = html;
+  }
+
   update(html) {
+    // 更新时保留图片懒加载逻辑
+    const newHtml = this.lazyLoadImg.changeSrc2DataSrc(html);
     if (!this.isPreviewerHidden()) {
       // 标记当前正在更新预览区域，锁定同步滚动功能
       window.clearTimeout(this.syncScrollLockTimer);
       this.applyingDomChanges = true;
       // 预览区未隐藏时，直接更新
       const tmpDiv = document.createElement('div');
-      const domContainer = this.options.previewerDom;
-      tmpDiv.innerHTML = html;
+      const domContainer = this.getDomContainer();
+      if (this.editor.selectAll) {
+        domContainer.innerHTML = '';
+      }
+      tmpDiv.innerHTML = newHtml;
       const newHtmlList = this.$getSignData(tmpDiv);
       const oldHtmlList = this.$getSignData(domContainer);
 
@@ -594,7 +715,7 @@ export default class Previewer {
       }
     } else {
       // 预览区隐藏时，先缓存起来，等到预览区打开再一次性更新
-      this.doHtmlCache(html);
+      this.doHtmlCache(newHtml);
     }
   }
 
@@ -636,12 +757,33 @@ export default class Previewer {
       this.update(this.options.previewerCache.html);
     }
     this.cleanHtmlCache();
+    this.$cherry.$event.emit('previewerOpen');
+    this.$cherry.$event.emit('editorClose');
   }
 
   editOnly(dealToolbar = false) {
     this.$dealEditAndPreviewOnly(true);
     this.cleanHtmlCache();
-    Event.emit(this.instanceId, Event.Events.previewerClose);
+    this.$cherry.$event.emit('previewerClose');
+    this.$cherry.$event.emit('editorOpen');
+  }
+
+  floatPreviewer() {
+    const fullEditorLayout = {
+      editorPercentage: '100%',
+      previewerPercentage: '100%',
+    };
+    const editorWidth = this.editor.options.editorDom.getBoundingClientRect().width;
+    const layout = this.calculateRealLayout(editorWidth);
+    this.options.previewerCache.layout = layout;
+    this.setRealLayout(fullEditorLayout.editorPercentage, fullEditorLayout.previewerPercentage);
+    this.options.virtualDragLineDom.classList.add('cherry-drag--hidden');
+    this.$cherry.createFloatPreviewer();
+  }
+
+  recoverFloatPreviewer() {
+    this.recoverPreviewer(true);
+    this.$cherry.clearFloatPreviewer();
   }
 
   recoverPreviewer(dealToolbar = false) {
@@ -649,16 +791,15 @@ export default class Previewer {
     this.options.virtualDragLineDom.classList.remove('cherry-drag--hidden');
     this.editor.options.editorDom.classList.remove('cherry-editor--full');
     // 恢复现场
-    if (this.options.previewerCache.layout !== {}) {
-      const { layout } = this.options.previewerCache;
-      this.setRealLayout(layout.editorPercentage, layout.previewerPercentage);
-    }
+    const { layout } = this.options.previewerCache;
+    this.setRealLayout(layout.editorPercentage, layout.previewerPercentage);
     if (this.options.previewerCache.htmlChanged) {
       this.update(this.options.previewerCache.html);
     }
     this.cleanHtmlCache();
 
-    Event.emit(this.instanceId, Event.Events.previewerOpen);
+    this.$cherry.$event.emit('previewerOpen');
+    this.$cherry.$event.emit('editorOpen');
 
     setTimeout(() => this.editor.editor.refresh(), 0);
   }
@@ -676,6 +817,10 @@ export default class Previewer {
 
   afterUpdate() {
     this.options.afterUpdateCallBack.map((fn) => fn());
+    if (this.highlightLineNum === undefined) {
+      this.highlightLineNum = 0;
+    }
+    this.highlightLine(this.highlightLineNum);
   }
 
   registerAfterUpdate(fn) {
@@ -731,6 +876,40 @@ export default class Previewer {
         return scrollTo;
       }
     }
+    // 如果计算完预览区域所有的行号依然＜左侧光标所在的行号，则预览区域直接滚到最低部
+    return domContainer.scrollHeight;
+  }
+
+  /**
+   * 高亮预览区域对应的行
+   * @param {Number} lineNum
+   */
+  highlightLine(lineNum) {
+    const domContainer = this.getDomContainer();
+    // 先取消所有行的高亮效果
+    domContainer.querySelectorAll('.cherry-highlight-line').forEach((element) => {
+      element.classList.remove('cherry-highlight-line');
+    });
+    // 只有双栏模式下才需要高亮光标对应的预览区域
+    if (this.$cherry?.status?.previewer !== 'show' || this.$cherry?.status?.editor !== 'show') {
+      return;
+    }
+    const doms = /** @type {NodeListOf<HTMLElement>}*/ (domContainer.querySelectorAll('[data-sign]'));
+    let lines = 0;
+    for (let index = 0; index < doms.length; index++) {
+      if (doms[index].parentNode !== domContainer) {
+        continue;
+      }
+      const blockLines = parseInt(doms[index].getAttribute('data-lines'), 10);
+      if (lines + blockLines < lineNum) {
+        lines += blockLines;
+        continue;
+      } else {
+        this.highlightLineNum = lineNum;
+        doms[index].classList.add('cherry-highlight-line');
+        return;
+      }
+    }
   }
 
   /**
@@ -739,29 +918,184 @@ export default class Previewer {
    * @param {Number} offset
    */
   scrollToLineNumWithOffset(lineNum, offset) {
-    const domContainer = this.getDomContainer();
-    this.disableScrollListener = true;
     const top = this.$getTopByLineNum(lineNum) - offset;
-    domContainer.scrollTo(0, top);
-  }
-
-  scrollToLineNum(lineNum, linePercent) {
-    const domContainer = this.getDomContainer();
-    this.disableScrollListener = true;
-    const top = this.$getTopByLineNum(lineNum, linePercent);
-    domContainer.scrollTo(0, top);
+    this.$scrollAnimation(top);
+    this.highlightLine(lineNum);
   }
 
   /**
+   * 滚动到对应位置
+   * @param {number} scrollTop 元素的id属性值
+   * @param {'auto'|'smooth'|'instant'} behavior 滚动方式
+   */
+  scrollToTop(scrollTop, behavior = 'auto') {
+    const previewDom = this.getDomContainer();
+    const scrollDom = this.getDomCanScroll(previewDom);
+    scrollDom.scrollTo({
+      top: scrollTop,
+      left: 0,
+      behavior,
+    });
+  }
+
+  /**
+   * 滚动到对应id的位置，实现锚点滚动能力
+   * @param {string} id 元素的id属性值
+   * @param {'smooth'|'instant'|'auto'} behavior 滚动方式
+   * @return {boolean} 是否有对应id的元素并执行滚动
+   */
+  scrollToId(id, behavior = 'smooth') {
+    const previewDom = this.getDomContainer();
+    const scrollDom = this.getDomCanScroll(previewDom);
+    let $id = id.replace(/^\s*#/, '').trim();
+    $id = /[%:]/.test($id) ? $id : encodeURIComponent($id);
+    const target = previewDom.querySelector(`[id="${$id}"]`) ?? false;
+    if (target === false) {
+      return false;
+    }
+    let scrollTop = 0;
+    if (scrollDom.nodeName === 'HTML') {
+      scrollTop = scrollDom.scrollTop + target.getBoundingClientRect().y - 20;
+    } else {
+      scrollTop = scrollDom.scrollTop + target.getBoundingClientRect().y - scrollDom.getBoundingClientRect().y - 20;
+    }
+    scrollDom.scrollTo({
+      top: scrollTop,
+      left: 0,
+      behavior,
+    });
+  }
+
+  /**
+   * 实现滚动动画
+   * @param { Number } targetY 目标位置
+   */
+  $scrollAnimation(targetY) {
+    this.animation.destinationTop = targetY;
+    if (this.animation.timer) {
+      return;
+    }
+    const animationHandler = () => {
+      const dom = this.getDomContainer();
+      const currentTop = dom.scrollTop;
+      const delta = this.animation.destinationTop - currentTop;
+      // 100毫秒内完成动画
+      const move = Math.ceil(Math.min(Math.abs(delta), Math.max(1, Math.abs(delta) / (100 / 16.7))));
+      if (delta === 0 || currentTop >= dom.scrollHeight || move > Math.abs(delta)) {
+        cancelAnimationFrame(this.animation.timer);
+        this.animation.timer = 0;
+        return;
+      }
+      this.disableScrollListener = true;
+      this.getDomContainer().scrollTo(null, currentTop + (delta / Math.abs(delta)) * move);
+      this.animation.timer = requestAnimationFrame(animationHandler);
+    };
+    this.animation.timer = requestAnimationFrame(animationHandler);
+  }
+
+  scrollToLineNum(lineNum, linePercent) {
+    const top = this.$getTopByLineNum(lineNum, linePercent);
+    this.$scrollAnimation(top);
+  }
+
+  /**
+   * 获取有滚动条的dom
+   */
+  getDomCanScroll(currentDom = this.getDomContainer()) {
+    if (currentDom.scrollHeight > currentDom.clientHeight || currentDom.clientHeight < window.innerHeight) {
+      return currentDom;
+    }
+    if (currentDom.parentElement) {
+      if (currentDom.nodeName === 'BODY') {
+        // 如果当前是body了，再往上就是html了
+        if (document.documentElement.scrollHeight > document.documentElement.clientHeight) {
+          return document.documentElement;
+        }
+        return currentDom;
+      }
+      return this.getDomCanScroll(currentDom.parentElement);
+    }
+  }
+
+  scrollToHeadByIndex(index) {
+    const previewDom = this.getDomContainer();
+    const scrollDom = this.getDomCanScroll(previewDom);
+    const targetHead = previewDom.querySelectorAll('h1,h2,h3,h4,h5,h6,h7,h8')[index] ?? false;
+    let scrollTop = 0;
+    if (targetHead !== false) {
+      if (scrollDom.nodeName === 'HTML') {
+        scrollTop = scrollDom.scrollTop + targetHead.getBoundingClientRect().y - 10;
+      } else {
+        scrollTop =
+          scrollDom.scrollTop + targetHead.getBoundingClientRect().y - scrollDom.getBoundingClientRect().y - 10;
+      }
+      scrollDom.scrollTo({
+        top: scrollTop,
+        left: 0,
+        behavior: 'smooth',
+      });
+    }
+  }
+
+  bindClick() {
+    this.getDomContainer().addEventListener('click', (event) => {
+      if (this.$cherry.options.callback.onClickPreview) {
+        const ret = this.$cherry.options.callback.onClickPreview(event);
+        // @ts-ignore
+        if (ret === false) {
+          return ret;
+        }
+      }
+      // 如果配置了点击toc目录不更新location hash
+      // @ts-ignore
+      if (this.$cherry.options.toolbars.toc?.updateLocationHash === false) {
+        const { target } = event;
+        if (target instanceof Element && target.nodeName === 'A' && /level-\d+/.test(target.className)) {
+          const liNode = target.parentElement;
+          const index = Array.from(liNode.parentElement.children).indexOf(liNode) - 1;
+          this.scrollToHeadByIndex(index);
+          event.stopPropagation();
+          event.preventDefault();
+        }
+        /** 增加个潜规则逻辑，脚注跳转时是否更新location hash也跟随options.toolbars.toc.updateLocationHash 的配置 */
+        if (target instanceof Element && target.nodeName === 'A' && /(footnote|footnote-ref)/.test(target.className)) {
+          const id = target.getAttribute('href');
+          this.scrollToId(id);
+          event.stopPropagation();
+          event.preventDefault();
+        }
+      }
+    });
+  }
+
+  onMouseDown() {
+    addEvent(this.getDomContainer(), 'mousedown', () => {
+      setTimeout(() => {
+        this.$cherry.$event.emit('cleanAllSubMenus');
+      });
+    });
+  }
+  /**
    * 导出预览区域内容
    * @public
-   * @param {String} type 'pdf'：导出成pdf文件; 'img'：导出成图片
+   * @param {'pdf' | 'img' | 'screenShot' | 'markdown' | 'html'} [type='pdf']
+   * 'pdf'：导出成pdf文件; 'img' | screenShot：导出成png图片; 'markdown'：导出成markdown文件; 'html'：导出成html文件;
+   * @param {string} [fileName] 导出文件名
    */
-  export(type = 'pdf') {
+  export(type = 'pdf', fileName = '') {
+    let name = fileName;
+    if (!fileName) {
+      const { innerText } = this.getDomContainer();
+      name = /^\s*([^\s][^\n]*)\n/.test(innerText) ? innerText.match(/^\s*([^\s][^\n]*)\n/)[1] : 'cherry-export';
+    }
     if (type === 'pdf') {
-      exportPDF(this.getDomContainer());
-    } else {
-      exportScreenShot(this.getDomContainer());
+      exportPDF(this.getDomContainer(), name);
+    } else if (type === 'screenShot' || type === 'img') {
+      exportScreenShot(this.getDomContainer(), name);
+    } else if (type === 'markdown') {
+      exportMarkdownFile(this.$cherry.getMarkdown(), name);
+    } else if (type === 'html') {
+      exportHTMLFile(this.getValue(), name);
     }
   }
 }

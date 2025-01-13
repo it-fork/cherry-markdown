@@ -40,13 +40,13 @@ export default class Strikethrough extends SyntaxBase {
     return str.replace(this.RULE.reg, '$1<del>$2</del>');
   }
 
-  rule() {
-    /** @type {Partial<import('~types/syntax').BasicHookRegexpRule>} */
-    let ret = {};
-    if (this.needWhitespace) {
-      ret = { begin: '(^|[\\s])\\~T\\~T', end: '\\~T\\~T(?=\\s|$)', content: '([\\w\\W]+?)' };
+  rule({ config } = { config: undefined }) {
+    /** @type {import('~types/syntax').BasicHookRegexpRule} */
+    let ret = /** @type {any} */ ({});
+    if (!!config.needWhitespace) {
+      ret = { ...ret, begin: '(^|[\\s])\\~T\\~T', end: '\\~T\\~T(?=\\s|$)', content: '([\\w\\W]+?)' };
     } else {
-      ret = { begin: '(^|[^\\\\])\\~T\\~T', end: '\\~T\\~T', content: '([\\w\\W]+?)' };
+      ret = { ...ret, begin: '(^|[^\\\\])\\~T\\~T', end: '\\~T\\~T', content: '([\\w\\W]+?)' };
     }
     ret.reg = new RegExp(ret.begin + ret.content + ret.end, 'g');
     return ret;

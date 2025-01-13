@@ -16,15 +16,17 @@
 import Cherry from './index.core';
 import MermaidCodeEngine from '@/addons/cherry-code-block-mermaid-plugin';
 import PlantUMLCodeEngine from '@/addons/cherry-code-block-plantuml-plugin';
+import EChartsTableEngine from '@/addons/advance/cherry-table-echarts-plugin';
 import mermaid from 'mermaid';
 
 const mermaidAPI = mermaid?.mermaidAPI;
 Cherry.usePlugin(MermaidCodeEngine, {
   mermaidAPI,
   theme: 'default',
-  sequence: { useMaxWidth: false, showSequenceNumbers: true },
+  sequence: { useMaxWidth: false },
 });
 Cherry.usePlugin(PlantUMLCodeEngine, {});
+Cherry.usePlugin(EChartsTableEngine);
 
 export * from './index.core';
 export default Cherry;

@@ -36,6 +36,22 @@ const options = {
   },
 };
 
+/**
+ * CODESPACES is always 'true' in github codespaces
+ *
+ * @see https://docs.github.com/en/codespaces/developing-in-codespaces/default-environment-variables-for-your-codespace
+ */
+if (process.env.CODESPACES === 'true') {
+  // a hack for rollup-plugin-livereload's websocket connection
+  process.env.CODESANDBOX_SSE = 'true';
+}
+
+// Using Tencent Cloud Studio is always 'TRUE' for Cloud Development Environment (X_IDE_IS_CLOUDSTUDIO=TRUE)
+if (process.env.X_IDE_IS_CLOUDSTUDIO === 'TRUE') {
+  // a hack for rollup-plugin-livereload's websocket connection
+  process.env.CODESANDBOX_SSE = 'true';
+}
+
 if (enableHotReload) {
   options.plugins = options.plugins.concat([
     serve({

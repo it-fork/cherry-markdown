@@ -13,9 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import locale from '@/utils/locale';
 import MenuBase from '@/toolbars/MenuBase';
-import Event from '@/Event';
 /**
  * 关闭/展示预览区域的按钮
  */
@@ -23,10 +21,10 @@ export default class TogglePreview extends MenuBase {
   /** @type {boolean} 当前预览状态 */
   $previewerHidden = false;
 
-  constructor(editor, engine) {
-    super(editor);
+  constructor($cherry) {
+    super($cherry);
     this.setName('previewClose', 'previewClose');
-    this.instanceId = engine.$cherry.previewer.instanceId;
+    this.instanceId = $cherry.instanceId;
     this.updateMarkdown = false;
     this.attachEventListeners();
   }
@@ -35,10 +33,10 @@ export default class TogglePreview extends MenuBase {
    * 绑定预览事件
    */
   attachEventListeners() {
-    Event.on(this.instanceId, Event.Events.previewerClose, () => {
+    this.$cherry.$event.on('previewerClose', () => {
       this.isHidden = true;
     });
-    Event.on(this.instanceId, Event.Events.previewerOpen, () => {
+    this.$cherry.$event.on('previewerOpen', () => {
       this.isHidden = false;
     });
   }
@@ -57,11 +55,11 @@ export default class TogglePreview extends MenuBase {
     if (state) {
       icon.classList.toggle('ch-icon-previewClose', false);
       icon.classList.toggle('ch-icon-preview', true);
-      icon.title = locale.zh_CN.togglePreview;
+      icon.title = this.locale.togglePreview;
     } else {
       icon.classList.toggle('ch-icon-previewClose', true);
       icon.classList.toggle('ch-icon-preview', false);
-      icon.title = locale.zh_CN.previewClose;
+      icon.title = this.locale.previewClose;
     }
     this.$previewerHidden = state;
   }
@@ -70,6 +68,18 @@ export default class TogglePreview extends MenuBase {
    * 响应点击事件
    */
   onClick() {
+    // 需要浮动预览
+    if (this.editor.previewer.isPreviewerNeedFloat()) {
+      // 正在浮动预览
+      if (this.editor.previewer.isPreviewerFloat()) {
+        this.editor.previewer.recoverFloatPreviewer(true);
+        this.isHidden = false;
+      } else {
+        this.editor.previewer.floatPreviewer();
+        this.isHidden = true;
+      }
+      return;
+    }
     if (this.editor.previewer.isPreviewerHidden()) {
       this.editor.previewer.recoverPreviewer(true);
       this.isHidden = false;

@@ -23,24 +23,32 @@ export default class FloatMenu extends Toolbar {
   // }
 
   init() {
-    this.editorDom = this.options.editor.getEditorDom();
+    this.editor = this.$cherry.editor;
+    this.editorDom = this.editor.getEditorDom();
     this.editorDom.querySelector('.CodeMirror-scroll').appendChild(this.options.dom);
     this.initAction();
+    Object.entries(this.shortcutKeyMap).forEach(([key, value]) => {
+      this.$cherry.toolbar.shortcutKeyMap[key] = value;
+    });
+  }
+
+  appendMenusToDom(menus) {
+    this.options.dom.appendChild(menus);
   }
 
   initAction() {
     const self = this;
-    this.options.editor.addListener('cursorActivity', (codemirror, evt) => {
+    this.editor.addListener('cursorActivity', (codemirror, evt) => {
       // 当编辑区光标位置改变时触发
       self.cursorActivity(evt, codemirror);
     });
 
-    this.options.editor.addListener('update', (codemirror, evt) => {
+    this.editor.addListener('update', (codemirror, evt) => {
       // 当编辑区内容改变时触发
       self.cursorActivity(evt, codemirror);
     });
 
-    this.options.editor.addListener('refresh', (codemirror, evt) => {
+    this.editor.addListener('refresh', (codemirror, evt) => {
       // 当编辑器刷新时触发
       setTimeout(() => {
         self.cursorActivity(evt, codemirror);

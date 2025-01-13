@@ -15,6 +15,8 @@
  */
 import SyntaxBase, { HOOKS_TYPE_LIST } from './SyntaxBase';
 import { prependLineFeedForParagraph } from '@/utils/lineFeed';
+import { getIsClassicBrFromLocal, testKeyInLocal } from '@/utils/config';
+import { blockNames } from '@/utils/sanitize';
 
 let cacheCounter = 0;
 // ~~C${cacheCounter}I${cacheIndex}$
@@ -28,12 +30,96 @@ export default class ParagraphBase extends SyntaxBase {
 
   constructor({ needCache, defaultCache = {} } = { needCache: false }) {
     super({});
-    this.cacheState = !!needCache;
+    this.needCache = !!needCache;
+    this.sign = '';
     if (needCache) {
       this.cache = defaultCache || {};
       this.cacheKey = `~~C${cacheCounter}`;
       cacheCounter += 1;
     }
+  }
+
+  initBrReg(classicBr = false) {
+    // 是否启用经典换行逻辑
+    // true：一个换行会被忽略，两个以上连续换行会分割成段落，
+    // false： 一个换行会转成<br>，两个连续换行会分割成段落，三个以上连续换行会转成<br>并分割段落
+    this.classicBr = testKeyInLocal('classicBr') ? getIsClassicBrFromLocal() : classicBr;
+    this.removeBrAfterBlock = null;
+    this.removeBrBeforeBlock = null;
+    this.removeNewlinesBetweenTags = null;
+  }
+
+  /**
+   * 处理经典换行问题
+   * @param {string} str markdown源码
+   * @returns markdown源码
+   */
+  $cleanParagraph(str) {
+    // remove leading and trailing newlines
+    const trimedPar = str.replace(/^\n+/, '').replace(/\n+$/, '');
+    if (this.classicBr) {
+      return trimedPar;
+    }
+    const minifiedPar = this.joinRawHtml(trimedPar);
+    return minifiedPar.replace(/\n/g, '<br>').replace(/\r/g, '\n'); // recover \n from \r
+  }
+
+  /**
+   * remove all newlines in html text
+   *
+   * @param {string} textContainsHtml
+   */
+  joinRawHtml(textContainsHtml) {
+    if (!this.removeBrAfterBlock) {
+      // preprocess custom white list
+      let customTagWhiteList = this.$engine.htmlWhiteListAppend?.split('|') ?? [];
+      customTagWhiteList = customTagWhiteList
+        .map((tag) => {
+          if (/[a-z-]+/gi.test(tag)) {
+            return tag;
+          }
+          return null;
+        })
+        .filter((tag) => tag !== null);
+      // concat all white list
+      const allBlockNames = customTagWhiteList.concat(blockNames).join('|');
+      // 段落标签自然换行，所以去掉段落标签两边的换行符
+      /**
+       * remove newlines after start tag, and remove whitespaces before newline
+       * e.g.
+       * <p> \n  text</p> => <p>  text</p>
+       *  ^^
+       * $1$2
+       */
+      this.removeBrAfterBlock = new RegExp(`<(${allBlockNames})(>| [^>]*?>)[^\\S\\n]*?\\n`, 'ig');
+      /**
+       * remove newlines before end tag, and whitespaces before end tag will be preserved
+       * e.g.
+       * <p>  text\n  </p> => <p>  text  </p>
+       *                ^
+       *               $1
+       */
+      this.removeBrBeforeBlock = new RegExp(`\\n[^\\S\\n]*?<\\/(${allBlockNames})>[^\\S\\n]*?\\n`, 'ig');
+      /**
+       * remove newlines between end tag & start tag
+       * e.g.
+       * </p> \n  <p   foo="bar"> => </p>\r  <p foo="bar">
+       *   ^    ^^ ^ ^^^^^^^^^^^^
+       *  $1    $2 $3  $4
+       */
+      this.removeNewlinesBetweenTags = new RegExp(
+        `<\\/(${allBlockNames})>[^\\S\\n]*?\\n([^\\S\\n]*?)<(${allBlockNames})(>| [^>]*?>)`,
+        'ig',
+      );
+    }
+    return textContainsHtml
+      .replace(this.removeBrAfterBlock, '<$1$2')
+      .replace(this.removeBrBeforeBlock, '</$1>')
+      .replace(this.removeNewlinesBetweenTags, '</$1>\r$2<$3$4'); // replace \n to \r
+  }
+
+  toHtml(str, sentenceMakeFunc) {
+    return str;
   }
 
   makeHtml(str, sentenceMakeFunc) {
@@ -159,31 +245,53 @@ export default class ParagraphBase extends SyntaxBase {
    * @return {string} cacheKey ~~C0I0_L1$
    */
   pushCache(str, sign = '', lineCount = 0) {
-    if (!this.cacheState) {
+    if (!this.needCache) {
       return;
     }
-    const $sign = sign || this.$engine.md5(str);
-    this.cache[$sign] = str;
-    return `${this.cacheKey}I${$sign}_L${lineCount}$`;
+    const $sign = sign || this.$engine.hash(str);
+    const key = `${this.cacheKey}I${$sign}_L${lineCount}$`;
+    this.cache[$sign] = {
+      content: str,
+      key,
+    };
+    return key;
   }
 
   popCache(sign) {
-    if (!this.cacheState) {
+    if (!this.needCache) {
       return;
     }
-    return this.cache[sign] || '';
+    return this.cache[sign].content || '';
   }
 
-  resetCache(defaultCache) {
-    if (!this.cacheState) {
+  testHasCache(sign) {
+    if (!this.needCache || !this.cache[sign]) {
+      return false;
+    }
+    return this.cache[sign].key;
+  }
+
+  // 当缓存全部被消费后，调用此方法清理多大的缓存
+  resetCache() {
+    if (!this.needCache) {
       return;
     }
-    this.cache = defaultCache || {};
+    // 当缓存队列比较大时，随机抛弃500个缓存
+    if (Object.keys(this.cache).length > 3000) {
+      let limit = 0;
+      for (const key of Object.keys(this.cache)) {
+        limit += 1;
+        if (limit > 500) {
+          return;
+        }
+        delete this.cache[key];
+      }
+    }
   }
 
   restoreCache(html) {
     // restore cached content
-    if (!this.cacheState) {
+    if (!this.needCache) {
       return html;
     }
     const regex = new RegExp(
@@ -191,8 +299,27 @@ export default class ParagraphBase extends SyntaxBase {
       'g',
     );
     const $html = html.replace(regex, (match, cacheSign) => this.popCache(cacheSign.replace(/_L\d+$/, '')));
-    this.resetCache();
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.timer = setTimeout(() => {
+      this.resetCache();
+    }, 1000);
     return $html;
+  }
+
+  /**
+   *
+   * @param {string} wholeMatch whole match
+   */
+  checkCache(wholeMatch, sentenceMakeFunc, lineCount = 0) {
+    this.sign = this.$engine.hash(wholeMatch);
+    // miss cache
+    if (!this.cache[this.sign]) {
+      return this.toHtml(wholeMatch, sentenceMakeFunc);
+    }
+    return `${this.cacheKey}I${this.sign}_L${lineCount}$`;
   }
 
   mounted() {

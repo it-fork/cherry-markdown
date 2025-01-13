@@ -43,6 +43,7 @@ const htmlParser = {
       .replace(/\n{3,}/g, '\n\n\n')
       .replace(/&gt;/g, '>')
       .replace(/&lt;/g, '<')
+      .replace(/&amp;/g, '&')
       .trim('\n');
   },
   /**
@@ -56,7 +57,10 @@ const htmlParser = {
       const temObj = arr[i];
       if (temObj.type === 'tag') ret = this.$handleTagObject(temObj, ret);
       else if (temObj.type === 'text' && temObj.content.length > 0) {
-        ret += temObj.content.replace(/&nbsp;/g, ' ').replace(/[\n]+/g, '\n');
+        ret += temObj.content
+          .replace(/&nbsp;/g, ' ')
+          .replace(/[\n]+/g, '\n')
+          .replace(/^[ \t\n]+\n\s*$/, '\n');
       }
     }
     return ret;
@@ -68,49 +72,16 @@ const htmlParser = {
    */
   $handleTagObject(temObj, returnString) {
     let ret = returnString;
-    if (temObj.attrs.class && temObj.attrs.class.indexOf('mermaid') >= 0) {
-      // 针对 mermaid 图
-      try {
-        ret += [
-          '\n```',
-          temObj.attrs['data-type'],
-          '\n',
-          decodeURIComponent(atob(temObj.attrs['data-code'])),
-          '\n```\n',
-        ].join('');
-      } catch (e) {
-        ret += [
-          '\n```',
-          temObj.attrs['data-type'],
-          '\n',
-          decodeURIComponent(temObj.attrs['data-code']),
-          '\n```\n',
-        ].join('');
-      }
-    } else if (temObj.attrs.class && temObj.attrs.class.indexOf('mathjax-wrapper') >= 0) {
-      // 针对公式，首尾加空格是为了适应新语法
-      try {
-        ret += ` ${decodeURIComponent(atob(temObj.attrs['data-source']))} `;
-      } catch (e) {
-        ret += ` ${decodeURIComponent(temObj.attrs['data-source'])} `;
-      }
-    } else if (temObj.attrs['data-control'] && temObj.attrs['data-control'] === 'tapd-table') {
-      // 处理高阶表格 cherryMarkdown里不需要这段逻辑
-      ret += ['\n```', ' tapd-table ', temObj.attrs['data-size'], '\n'].join('');
-
-      if (temObj.children[1] && temObj.children[1].children[0].content) {
-        const data = temObj.children[1].children[0].content.replace(/\s+/g, '');
-        ret += ['\n', data, '\n```\n'].join('');
-      } else {
-        ret += ['\n', '"工作表":{"数据":{"19::25":" "}} ', '\n```\n'].join(''); // 高阶数据存在问题，转换为默认
-      }
-    } else if (temObj.attrs.class && temObj.attrs.class.indexOf('ch-icon') >= 0) {
+    if (temObj.attrs.class && /(ch-icon-square|ch-icon-check)/.test(temObj.attrs.class)) {
       // 针对checklist
       if (temObj.attrs.class.indexOf('ch-icon-check') >= 0) {
         ret += '[x]';
       } else {
         ret += '[ ]';
       }
+    } else if (temObj.attrs.class && /cherry-code-preview-lang-select/.test(temObj.attrs.class)) {
+      // 如果是代码块的选择语言标签，则不做任何处理
+      ret += '';
     } else {
       // 如果是标签
       ret += this.$dealTag(temObj);
@@ -129,13 +100,13 @@ const htmlParser = {
       // 递归每一个子元素
       tmpText = self.$dealHtml(obj.children);
     }
-    if (obj.name === 'style') {
-      // 不解析样式属性，只处理行内样式
+    if (/(style|meta|link|script)/.test(obj.name)) {
       return '';
     }
     if (obj.name === 'code' || obj.name === 'pre') {
       // 解析代码块 或 行内代码
-      return self.tagParser.codeParser(obj, self.$dealCodeTag(obj));
+      // pre时，强制转成代码块
+      return self.tagParser.codeParser(obj, self.$dealCodeTag(obj), obj.name === 'pre');
     }
     if (typeof self.tagParser[`${obj.name}Parser`] === 'function') {
       // 解析对应的具体标签
@@ -168,8 +139,7 @@ const htmlParser = {
         // 递归找到对应的代码文本
         ret += self.$dealCodeTag(temObj);
       } else {
-        // 代码块会对<、>做转义，转成markdown时就不需要转义了
-        ret += temObj.content.replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+        ret += temObj.content;
       }
     }
     return ret;
@@ -319,7 +289,7 @@ const htmlParser = {
      * @returns {string} str
      */
     pParser(obj, str) {
-      const $str = str.replace(/\t/g, '');
+      const $str = str;
       if (/\n$/.test($str)) {
         return $str;
       }
@@ -332,7 +302,7 @@ const htmlParser = {
      * @returns {string} str
      */
     divParser(obj, str) {
-      const $str = str.replace(/\t/g, '');
+      const $str = str;
       if (/\n$/.test($str)) {
         return $str;
       }
@@ -345,7 +315,7 @@ const htmlParser = {
      * @returns {string} str
      */
     spanParser(obj, str) {
-      const $str = str.replace(/\t/g, '');
+      const $str = str.replace(/\t/g, '').replace(/\n/g, ' '); // span标签里不应该有\n的，有的话就转化成空格
       if (obj.attrs && obj.attrs.style) {
         // 先屏蔽字体颜色、字体大小、字体背景色的转义逻辑
         // let color = this.styleParser.colorAttrParser(obj.attrs.style);
@@ -354,6 +324,7 @@ const htmlParser = {
         // str  = this.formatEngine.convertColor(str, color);
         // str  = this.formatEngine.convertSize(str, size);
         // str  = this.formatEngine.convertBgColor(str, bgcolor);
+        // return str;
       }
       return $str;
     },
@@ -361,10 +332,11 @@ const htmlParser = {
      * 解析code标签
      * @param {HTMLElement} obj
      * @param {string} str 需要回填的字符串
+     * @param {boolean} isBlock 是否强制为代码块
      * @returns {string} str
      */
-    codeParser(obj, str) {
-      return this.formatEngine.convertCode(str);
+    codeParser(obj, str, isBlock = false) {
+      return this.formatEngine.convertCode(str, isBlock);
     },
     /**
      * 解析br标签
@@ -759,11 +731,11 @@ const htmlParser = {
     convertBr(str, attr) {
       return str + attr;
     },
-    convertCode(str) {
-      if (/\n/.test(str)) {
-        return `\n\`\`\`\n${str.replace(/\n+$/, '')}\n\`\`\`\n`;
+    convertCode(str, isBlock = false) {
+      if (/\n/.test(str) || isBlock) {
+        return `\`\`\`\n${str.replace(/\n+$/, '')}\n\`\`\``;
       }
-      return ` \`${str.replace(/`/g, '\\`')}\` `;
+      return `\`${str.replace(/`/g, '\\`')}\``;
     },
     convertB(str) {
       return /^\s*$/.test(str) ? '' : `**${str}**`;
@@ -774,9 +746,9 @@ const htmlParser = {
     convertU(str) {
       return /^\s*$/.test(str) ? '' : ` /${str}/ `;
     },
-    convertImg(str, attr) {
-      const $str = str && str.length > 0 ? $str : 'image';
-      return `![${$str}](${attr})`;
+    convertImg(alt, src) {
+      const $alt = alt && alt.length > 0 ? alt : 'image';
+      return `![${$alt}](${src})`;
     },
     convertGraph(str, attr, data, obj) {
       const $str = str && str.length > 0 ? str : 'graph';
@@ -818,29 +790,50 @@ const htmlParser = {
       return `^^${str.trim().replace(/\^\^/g, '\\^\\^')}^^`;
     },
     convertTd(str) {
-      return `~|${str.trim().replace(/\n/g, '<br>')} ~|`;
+      return `~|${str
+        .trim()
+        .replace(/\n{1,}/g, '<br>')
+        .replace(/ /g, '~s~')} ~|`;
     },
     convertTh(str) {
-      return `~|${str.trim().replace(/\n/g, '<br>')} ~|`;
+      if (/^\s*$/.test(str)) {
+        return '';
+      }
+      return `~|${str.trim().replace(/\n{1,}/g, '<br>')} ~|`;
     },
     convertTr(str) {
-      return `${str}\n`;
+      if (/^\s*$/.test(str)) {
+        return '';
+      }
+      return `${str.trim().replace(/\n/g, '')}\n`;
     },
     convertThead(str) {
-      return `${str.replace(/~\|~\|/g, '~|').replace(/~\|/g, '|')}|:--|\n`;
+      const $str = `${str
+        .replace(/[ \t]+/g, '')
+        .replace(/~\|~\|/g, '~|')
+        .replace(/~\|/g, '|')}\n`;
+      const headsCount = $str.match(/\|/g).length - 1;
+      return `${$str}|${':-:|'.repeat(headsCount)}\n`;
     },
     convertTable(str) {
-      const ret = `\n${str.replace(/~\|~\|/g, '~|').replace(/~\|/g, '|')}\n`;
-      if (/\|:--\|/.test(ret)) {
-        return ret;
+      let ret = `\n${str
+        .replace(/[ \t]+/g, '')
+        .replace(/~\|~\|/g, '~|')
+        .replace(/~\|/g, '|')}\n`
+        .replace(/\n{2,}/g, '\n')
+        .replace(/\n[ \t]+\n/g, '\n')
+        .replace(/~s~/g, ' ');
+      if (!/\|:-:\|/.test(ret)) {
+        const headsCount = ret.match(/^\n[^\n]+\n/)[0].match(/\|/g).length - 1;
+        ret = `\n|${' |'.repeat(headsCount)}\n|${':-:|'.repeat(headsCount)}${ret}`;
       }
-      return `\n| |\n|:--|${ret}`;
+      return ret;
     },
     convertLi(str) {
       return `- ${str.replace(/^\n/, '').replace(/\n+$/, '').replace(/\n+/g, '\n\t')}\n`;
     },
     convertUl(str) {
-      return `\n\n${str}\n\n`;
+      return `${str}\n`;
     },
     convertOl(str) {
       const arr = str.split('\n');
@@ -852,7 +845,7 @@ const htmlParser = {
         }
       }
       const $str = arr.join('\n');
-      return `\n\n${$str}\n\n`;
+      return `${$str}\n`;
     },
     convertStrong(str) {
       return /^\s*$/.test(str) ? '' : `**${str}**`;
@@ -885,10 +878,10 @@ const htmlParser = {
       return `###### ${str.trim().replace(/\n+$/, '')}\n\n`;
     },
     convertBlockquote(str) {
-      return `\n>${str.trim()}\n\n`;
+      return `>${str.trim()}\n\n`;
     },
     convertAddress(str) {
-      return `\n>${str.trim()}\n\n`;
+      return `>${str.trim()}\n\n`;
     },
   },
   /**

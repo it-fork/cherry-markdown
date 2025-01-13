@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { terser } from 'rollup-plugin-terser';
+import terser from '@rollup/plugin-terser';
 import baseConfig from './rollup.base.config';
 
 // TODO: 新增完整版引擎构建, 目前引擎构建仅支持核心构建
@@ -31,19 +31,36 @@ const terserPlugin = (options = {}) =>
     ...options,
   });
 
+const umdOutputConfig = {
+  ...baseConfig.output,
+  exports: 'named',
+  file: isCoreBuild ? 'dist/cherry-markdown.engine.core.js' : 'dist/cherry-markdown.engine.js',
+  format: 'umd',
+  name: 'CherryEngine',
+  sourcemap: false,
+  compact: true,
+  plugins: [terserPlugin()],
+};
+
+const esmOutputConfig = {
+  ...baseConfig.output,
+  file: isCoreBuild ? 'dist/cherry-markdown.engine.core.esm.js' : 'dist/cherry-markdown.engine.esm.js',
+  format: 'esm',
+  name: 'CherryEngine',
+  sourcemap: false,
+  compact: true,
+  plugins: [
+    terserPlugin({
+      module: true,
+      ecma: 2015,
+    }),
+  ],
+};
+
 const options = {
   ...baseConfig,
   input: isCoreBuild ? 'src/index.engine.core.js' : 'src/index.engine.js',
-  output: {
-    ...baseConfig.output,
-    exports: 'named',
-    file: isCoreBuild ? 'dist/cherry-markdown.engine.core.js' : 'dist/cherry-markdown.engine.js',
-    format: 'umd',
-    name: 'CherryEngine',
-    sourcemap: false,
-    compact: true,
-    plugins: [terserPlugin()],
-  },
+  output: [umdOutputConfig, esmOutputConfig],
 };
 
 if (!Array.isArray(options.external)) {
@@ -56,8 +73,8 @@ const IS_COMMONJS_BUILD = process.env.BUILD_TARGET === 'commonjs';
 
 if (IS_COMMONJS_BUILD) {
   options.output = {
-    ...options.output,
-    file: options.output.file.replace(/\.js$/, '.common.js'),
+    ...umdOutputConfig,
+    file: umdOutputConfig.file.replace(/\.js$/, '.common.js'),
     format: 'cjs',
   };
 }
